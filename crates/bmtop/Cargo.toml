@@ -1,0 +1,20 @@
+[package]
+name = "bmtop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bmtop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bmtop-core = { path = "../bmtop-core" }
+clap.workspace = true
+clap_complete.workspace = true
+bmtop-macos = { path = "../bmtop-macos" }
+bmtop-tui = { path = "../bmtop-tui" }
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true

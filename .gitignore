@@ -1,0 +1,10 @@
+/target/
+.cargo-cache/
+.DS_Store
+.idea/
+.vscode/
+/dist/
+findings.md
+progress.md
+task_plan.md
+Cargo.lock
