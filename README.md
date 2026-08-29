@@ -2,6 +2,31 @@
 
 `bmtop` is a local-first macOS terminal monitor for process, CPU, memory, network, disk, GPU, hardware and sensor information. On Apple Silicon it also reads SoC metrics natively — E/P cluster frequency and residency, CPU/GPU/ANE/DRAM power, system wall power, temperatures, fans and thermal pressure — via IOReport/SMC with no sudo required. It further collects battery state, system-wide disk I/O rates, per-process GPU usage, network link type (Ethernet speed / Wi-Fi generation), Thunderbolt topology, RDMA status, GPU peak frequency with theoretical TFLOPS, and — opt-in via the `f` key, requiring Screen Recording permission — display FPS. DRAM/ANE bandwidth is shown where the kernel exposes AMC byte counters (some macOS 26 builds reject that IOReport group; the rows hide there).
 
+## Install
+
+### Homebrew
+
+```sh
+brew tap bettermacnet/tap
+brew install bmtop
+```
+
+Or in one step: `brew install bettermacnet/tap/bmtop`. The formula builds
+from source (Homebrew installs the Rust toolchain as a build-only
+dependency).
+
+### Prebuilt binary
+
+Each release ships a signed-checksum universal binary (arm64 + x86_64):
+
+```sh
+curl -sLO https://github.com/BetterMacNet/better_top/releases/latest/download/bmtop-macos-universal.tar.gz
+tar -xzf bmtop-macos-universal.tar.gz
+./bmtop --version
+```
+
+Verify the download against the `.sha256` file published next to the asset.
+
 ## Build
 
 ```sh
