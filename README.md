@@ -20,7 +20,7 @@ dependency).
 Each release ships a signed-checksum universal binary (arm64 + x86_64):
 
 ```sh
-curl -sLO https://github.com/BetterMacNet/better_top/releases/latest/download/bmtop-macos-universal.tar.gz
+curl -sLO https://github.com/BetterMacNet/bmtop/releases/latest/download/bmtop-macos-universal.tar.gz
 tar -xzf bmtop-macos-universal.tar.gz
 ./bmtop --version
 ```
