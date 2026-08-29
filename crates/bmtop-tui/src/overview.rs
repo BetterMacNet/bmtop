@@ -407,8 +407,8 @@ fn disk_card(text: &'static Strings, state: &UiState, snapshot: &SystemSnapshot)
         lines.push(text_line(
             "I/O",
             text.disk_io_value
-                .replace("{read}", &rate(Some(io.read_bytes_per_second)))
-                .replace("{write}", &rate(Some(io.write_bytes_per_second))),
+                .replace("{read}", &rate_decimal(Some(io.read_bytes_per_second)))
+                .replace("{write}", &rate_decimal(Some(io.write_bytes_per_second))),
         ));
     }
     Card {

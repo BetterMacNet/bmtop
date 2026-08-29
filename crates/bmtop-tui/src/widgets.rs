@@ -248,6 +248,11 @@ pub(crate) fn rate(value: Option<f64>) -> String {
         .map(|value| format_bytes(value as u64) + "/s")
         .unwrap_or_else(|| "--".into())
 }
+pub(crate) fn rate_decimal(value: Option<f64>) -> String {
+    value
+        .map(|value| format_bytes_decimal(value as u64) + "/s")
+        .unwrap_or_else(|| "--".into())
+}
 pub(crate) fn format_load(values: &[f64]) -> String {
     values
         .iter()
@@ -256,11 +261,21 @@ pub(crate) fn format_load(values: &[f64]) -> String {
         .join(" ")
 }
 pub(crate) fn format_bytes(value: u64) -> String {
+    format_bytes_scaled(value, 1024.0)
+}
+
+/// 磁盘容量与磁盘 I/O 按存储厂商 / Finder 惯例用十进制（1K = 1000）；
+/// 内存等其余字节值仍用二进制（1K = 1024）。
+pub(crate) fn format_bytes_decimal(value: u64) -> String {
+    format_bytes_scaled(value, 1000.0)
+}
+
+fn format_bytes_scaled(value: u64, base: f64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut number = value as f64;
     let mut index = 0;
-    while number >= 1024.0 && index < UNITS.len() - 1 {
-        number /= 1024.0;
+    while number >= base && index < UNITS.len() - 1 {
+        number /= base;
         index += 1;
     }
     if index == 0 {

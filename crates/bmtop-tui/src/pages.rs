@@ -287,8 +287,8 @@ pub(crate) fn render_disk(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
                 volume.used_percent,
                 &text
                     .disk_usage
-                    .replace("{used}", &format_bytes(volume.used_bytes))
-                    .replace("{total}", &format_bytes(volume.total_bytes)),
+                    .replace("{used}", &format_bytes_decimal(volume.used_bytes))
+                    .replace("{total}", &format_bytes_decimal(volume.total_bytes)),
             )
         })
         .collect();
@@ -303,8 +303,8 @@ pub(crate) fn render_disk(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
         secondary = format!(
             "{} · {}",
             text.disk_io_value
-                .replace("{read}", &rate(Some(io.read_bytes_per_second)))
-                .replace("{write}", &rate(Some(io.write_bytes_per_second))),
+                .replace("{read}", &rate_decimal(Some(io.read_bytes_per_second)))
+                .replace("{write}", &rate_decimal(Some(io.write_bytes_per_second))),
             secondary
         );
     }

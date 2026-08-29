@@ -704,7 +704,7 @@ mod tests {
             rendered.contains("Wi-Fi 6 @ 866Mbps"),
             "网络卡缺链路:\n{rendered}"
         );
-        assert!(rendered.contains("读 1.2M/s"), "磁盘卡缺 I/O:\n{rendered}");
+        assert!(rendered.contains("读 1.3M/s"), "磁盘卡缺 I/O:\n{rendered}");
         assert!(
             rendered.contains("1.38 GHz · 14.1 TFLOPS"),
             "GPU 卡缺峰值:\n{rendered}"
@@ -1288,6 +1288,24 @@ mod tests {
         assert!(
             !screen.contains("\"filesystem\""),
             "磁盘页不应再输出 JSON:\n{screen}"
+        );
+    }
+
+    /// 磁盘容量按厂商/Finder 惯例用十进制单位：8_000_000_000_000 字节
+    /// 就是 8.0T，而不是二进制的 7.3T。内存等其余字节值仍是二进制。
+    #[test]
+    fn disk_page_uses_decimal_units() {
+        let mut state = chinese(AppMode::Disk);
+        state.set_snapshot(rich_snapshot());
+        state.apply_detail(Ok(ModeDetail::Disks(disks())));
+        let screen = screen(&state, 110, 12);
+        assert!(
+            screen.contains("8.0T"),
+            "根卷总量应为十进制 8.0T:\n{screen}"
+        );
+        assert!(
+            screen.contains("2.0G"),
+            "外接卷总量应为十进制 2.0G:\n{screen}"
         );
     }
 
