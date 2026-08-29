@@ -145,6 +145,36 @@ re-sorting between samples never moves your selection.
 Termination always requires confirmation and revalidates PID plus process
 start time. PID 0, PID 1 and the bmtop process itself are protected.
 
+## Pages
+
+**CPU** — E/P cluster frequency and residency, per-core load:
+
+<p align="center"><img src="assets/cpu.png" alt="CPU page" width="920"/></p>
+
+**Memory** — usage, pressure, wired/compressed/active breakdown and swap:
+
+<p align="center"><img src="assets/memory.png" alt="Memory page" width="920"/></p>
+
+**Network** — live throughput, link type and per-interface totals:
+
+<p align="center"><img src="assets/network.png" alt="Network page" width="920"/></p>
+
+**Disk** — per-volume usage (decimal units, as vendors label them) and system-wide I/O:
+
+<p align="center"><img src="assets/disk.png" alt="Disk page" width="920"/></p>
+
+**GPU** — usage, frequency, power, temperature and peak TFLOPS:
+
+<p align="center"><img src="assets/gpu.png" alt="GPU page" width="920"/></p>
+
+**Hardware** — system_profiler sections plus Thunderbolt and RDMA (identifiers redacted):
+
+<p align="center"><img src="assets/hardware.png" alt="Hardware page" width="920"/></p>
+
+**Sensors** — thermal pressure, every temperature group, fans and battery:
+
+<p align="center"><img src="assets/sensors.png" alt="Sensors page" width="920"/></p>
+
 ## Permissions and privacy
 
 Normal collection needs **no administrator access**. SoC metrics come from the
