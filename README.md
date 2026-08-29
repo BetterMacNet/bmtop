@@ -1,126 +1,189 @@
-# bmtop
+<h1 align="center">bmtop</h1>
 
-`bmtop` is a local-first macOS terminal monitor for process, CPU, memory, network, disk, GPU, hardware and sensor information. On Apple Silicon it also reads SoC metrics natively — E/P cluster frequency and residency, CPU/GPU/ANE/DRAM power, system wall power, temperatures, fans and thermal pressure — via IOReport/SMC with no sudo required. It further collects battery state, system-wide disk I/O rates, per-process GPU usage, network link type (Ethernet speed / Wi-Fi generation), Thunderbolt topology, RDMA status, GPU peak frequency with theoretical TFLOPS, and — opt-in via the `f` key, requiring Screen Recording permission — display FPS. DRAM/ANE bandwidth is shown where the kernel exposes AMC byte counters (some macOS 26 builds reject that IOReport group; the rows hide there).
+<p align="center">
+  <b>A local-first terminal monitor for macOS.</b><br/>
+  htop-style process control plus native Apple Silicon SoC telemetry — power, frequency,
+  temperature, fans — with no sudo and no daemons.
+</p>
+
+<p align="center">
+  <a href="https://github.com/BetterMacNet/bmtop/actions/workflows/ci.yml"><img src="https://github.com/BetterMacNet/bmtop/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://github.com/BetterMacNet/bmtop/releases/latest"><img src="https://img.shields.io/github/v/release/BetterMacNet/bmtop" alt="Latest release"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"/></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon%20%7C%20Intel)-black" alt="Platform"/>
+  <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Rust"/>
+</p>
+
+<p align="center">
+  <img src="assets/overview.png" alt="bmtop overview — native SoC telemetry on Apple Silicon" width="920"/>
+</p>
+
+## Highlights
+
+- **Native SoC telemetry on Apple Silicon** — E/P cluster frequency and residency,
+  CPU/GPU/ANE/DRAM power, system wall power, temperatures, fans and thermal
+  pressure, read directly via IOReport/SMC. No `sudo`, no `powermetrics` daemon.
+- **Everything in one dashboard** — processes, CPU, memory, network, disk I/O,
+  GPU (including per-process usage and peak frequency with theoretical TFLOPS),
+  battery, hardware and sensors.
+- **Deep hardware awareness** — network link type (Ethernet speed / Wi-Fi
+  generation), Thunderbolt topology, RDMA status, and opt-in display FPS.
+- **Scripting-grade output** — every panel is also a subcommand with stable
+  `json` / `jsonl` / `csv` output, versioned schema and sysexits-style exit codes.
+- **Local-first and privacy-conscious** — no telemetry, no network calls;
+  hardware identifiers are redacted in JSON by default.
+- **top/htop muscle memory** — sorting, filtering, tree view and kill flows
+  follow macOS `top` and procps `top` conventions.
+
+<p align="center">
+  <img src="assets/processes.png" alt="bmtop process view — htop-style table with per-process details" width="920"/>
+</p>
 
 ## Install
 
 ### Homebrew
 
 ```sh
-brew tap bettermacnet/tap
-brew install bmtop
+brew install bettermacnet/tap/bmtop
 ```
-
-Or in one step: `brew install bettermacnet/tap/bmtop`. The formula builds
-from source (Homebrew installs the Rust toolchain as a build-only
-dependency).
 
 ### Prebuilt binary
 
-Each release ships a signed-checksum universal binary (arm64 + x86_64):
+Each release ships a universal binary (arm64 + x86_64):
 
 ```sh
 curl -sLO https://github.com/BetterMacNet/bmtop/releases/latest/download/bmtop-macos-universal.tar.gz
 tar -xzf bmtop-macos-universal.tar.gz
-./bmtop --version
+./bmtop
 ```
 
 Verify the download against the `.sha256` file published next to the asset.
 
-## Build
+### From source
 
 ```sh
-export CARGO_HOME="$PWD/.cargo-cache"
-cargo test --workspace
-cargo run -p bmtop -- doctor --format json
-cargo run -p bmtop -- ps --format json
+git clone https://github.com/BetterMacNet/bmtop.git
+cd bmtop
+cargo install --path crates/bmtop
 ```
 
-The default command opens the interactive TUI. In a pipeline, use an explicit
-subcommand and `--format json`, `jsonl`, or `csv`:
+## Usage
+
+Run `bmtop` to open the interactive TUI. In a pipeline, use an explicit
+subcommand and a machine-readable format:
 
 ```sh
-bmtop top
-bmtop ps --sort memory --limit 10 --format table
-bmtop memory --format json
+bmtop top                                  # one-shot table snapshot
+bmtop ps --sort memory --limit 10          # top memory consumers
+bmtop memory --format json                 # single JSON snapshot
 bmtop network -n 60 -i 1s --format jsonl   # 60 samples, then exit
-bmtop hardware --format json
+bmtop gpu --enhanced                       # one sudo powermetrics sample merged in
+bmtop doctor --format json                 # capability probe report
 ```
 
 JSON output follows `schema_version` 2: `captured_at` is UTC RFC 3339 and
-`capabilities` lists the capabilities of the snapshot that produced the data.
-`-n/--count N` samples N times and exits; `--watch` alone runs until Ctrl-C.
-Exit codes are sysexits-style: 64 usage, 69 capability unavailable,
-77 permission denied, 70 other failures.
+`capabilities` lists what the producing snapshot could observe. `-n/--count N`
+samples N times and exits; `--watch` runs until Ctrl-C. Exit codes are
+sysexits-style: `64` usage, `69` capability unavailable, `77` permission
+denied, `70` other failures.
 
-## Interaction
+Shell completions for bash, zsh and fish are installed by Homebrew, or can be
+generated with `bmtop completion <shell>`.
 
-Use `1` through `9` / `F1` through `F9` to jump to a mode, `←`/`→` (or
-`Tab`/`Shift+Tab`) to cycle through the mode bar, `↑`/`↓` to move, `/` to
-search, `Space` to pause, `?` for help and `q` to leave.
+## Keybindings
 
-The following keys follow the system `top` conventions: `o` cycles the sort
-column (CPU/MEM/PID) and `O` reverses the order; `s` opens a prompt for the
-sampling interval (bare digits mean seconds, `500ms` also works, blank keeps
-the current value — digits typed inside the prompt do not switch modes);
-`u` filters by user (blank or Esc shows all).
+### Navigation
 
-Linux top (procps) conventions are covered too: `P`/`M`/`N` sort directly by
-CPU/memory/PID and `R` reverses; `d` is an alias for `s`; `k` opens the
-terminate prompt (same as `x`); `c` toggles full command paths; `i` hides
-idle processes (rows whose CPU is exactly 0; unknown-CPU rows stay); `V`
-switches the process table to a tree indented by parent PID; `H` switches the
-detail pane to the selected process's thread list (per-thread CPU, state,
-name — collected only for the selected process). `+`/`-` step the interval by
-250ms and `Ctrl+L` forces a full redraw. The cursor is pinned to the process
-under it, not the row number, so re-sorting between samples does not move it.
-Note: `j`/`k` no longer move the selection; `k` now kills, use `↑`/`↓`.
+| Key | Action |
+|-----|--------|
+| `1`–`9` / `F1`–`F9` | Jump to a mode |
+| `←` `→` / `Tab` `Shift+Tab` | Cycle through the mode bar |
+| `↑` `↓` | Move selection |
+| `/` | Search |
+| `Space` | Pause |
+| `?` | Help |
+| `q` | Quit |
+
 When the terminal supports the enhanced keyboard protocol (kitty, WezTerm,
-Ghostty, …) bmtop enables it on startup, so `Command+1` through `Command+9`
-also switch modes; `bmtop doctor` reports the detection result as
-`keyboard.command_digit`. The default macOS Terminal does not support it, and
-terminal tab shortcuts may intercept those keys first.
+Ghostty, …) bmtop enables it on startup, so `Command+1`–`Command+9` also
+switch modes; `bmtop doctor` reports the detection result as
+`keyboard.command_digit`.
 
-The process table is read-only until `x` or `X` is chosen. Termination always
-requires confirmation and revalidates PID plus process start time. PID 0, PID 1
-and the bmtop process itself are protected.
+### Sorting and filtering (macOS `top` conventions)
 
-## Permission boundary
+| Key | Action |
+|-----|--------|
+| `o` / `O` | Cycle sort column (CPU/MEM/PID) / reverse order |
+| `s` | Prompt for sampling interval (`2` = seconds, `500ms` works too) |
+| `u` | Filter by user (blank or `Esc` shows all) |
 
-Normal collection does not require administrator access. SoC metrics
-(cluster frequencies, power, temperatures, fans) come from the private
-IOReport library, read-only SMC keys and `notify_get_state` — all readable
-without root. On Intel Macs or if IOReport is unavailable, `soc` data is
-omitted and the UI degrades to the previous view; `bmtop doctor` reports the
-probe result under `soc`. `bmtop gpu --enhanced`
-and `bmtop sensors --enhanced` run one `powermetrics` sample through
-`/usr/bin/sudo` (fixed binary, fixed arguments, no shell) and merge GPU
-frequency/power and thermal pressure into the output; `--enhanced` is rejected
-elsewhere. Signals for another user's process also go through `sudo` only when
-explicitly requested. The main TUI never runs as root and passwords are never
-stored.
+### procps `top` conventions
 
-Hardware identifiers are redacted in JSON by default. Use
-`--show-sensitive` only when the local output is trusted.
+| Key | Action |
+|-----|--------|
+| `P` / `M` / `N` | Sort by CPU / memory / PID |
+| `R` | Reverse sort order |
+| `d` | Alias for `s` |
+| `c` | Toggle full command paths |
+| `i` | Hide idle processes |
+| `V` | Tree view indented by parent PID |
+| `H` | Thread list for the selected process |
+| `+` / `-` | Step interval by 250ms |
+| `Ctrl+L` | Force full redraw |
 
-## Universal build
+The cursor is pinned to the process under it, not the row number, so
+re-sorting between samples never moves your selection.
 
-`scripts/build-universal.sh` builds `arm64` and `x86_64` slices and combines
-them with `lipo`. It requires both Rust targets to already be installed; it
-does not mutate the global Rust toolchain.
+### Process actions
 
+| Key | Action |
+|-----|--------|
+| `x` / `k` | Terminate the selected process (SIGTERM, with confirmation) |
+| `X` | Force-kill the selected process (SIGKILL, with confirmation) |
+| `f` | Toggle display FPS (requires Screen Recording permission) |
+
+Termination always requires confirmation and revalidates PID plus process
+start time. PID 0, PID 1 and the bmtop process itself are protected.
+
+## Permissions and privacy
+
+Normal collection needs **no administrator access**. SoC metrics come from the
+private IOReport library, read-only SMC keys and `notify_get_state` — all
+readable without root. On Intel Macs, or when IOReport is unavailable, `soc`
+data is omitted and the UI degrades gracefully; `bmtop doctor` reports the
+probe result under `soc`.
+
+`bmtop gpu --enhanced` and `bmtop sensors --enhanced` run one `powermetrics`
+sample through `/usr/bin/sudo` (fixed binary, fixed arguments, no shell) and
+merge GPU frequency/power and thermal pressure into the output; `--enhanced`
+is rejected elsewhere. Signals for another user's process also go through
+`sudo` only when explicitly requested. The TUI never runs as root and
+passwords are never stored.
+
+Hardware identifiers are redacted in JSON by default; use `--show-sensitive`
+only when the local output is trusted. DRAM/ANE bandwidth rows appear where
+the kernel exposes AMC byte counters (some macOS 26 builds reject that
+IOReport group; the rows hide there).
+
+## Development
+
+```sh
+./scripts/verify.sh            # fmt, clippy -D warnings, all tests, doctor smoke check
+./scripts/build-universal.sh   # arm64 + x86_64 slices combined with lipo
+./scripts/package-release.sh   # universal binary + tar.gz + sha256 in dist/
+```
+
+The workspace is split into `bmtop-core` (models, schema, i18n),
+`bmtop-macos` (native collectors), `bmtop-tui` (ratatui UI) and `bmtop`
+(CLI). Releases are cut by pushing a `v*` tag; CI validates the tag against
+the workspace version, builds the universal binary and publishes the GitHub
+release automatically.
 
 ## License
 
-`bmtop` is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE) © 2026 BetterMacNet
 
-Copyright (c) 2026 BetterMacNet
-
-## Third-party notices
-
-`bmtop` statically links a number of Rust crates, all under permissive
-licenses (MIT, Apache-2.0, and similar). The full list of bundled
-dependencies, their versions, licenses and upstream repositories is kept in
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), as required by those
-licenses. SoC metrics are read through Apple system libraries (IOReport,
-IOKit/SMC), which ship with macOS and are not redistributed.
+Bundled third-party crates are listed with their licenses in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). SoC metrics are read
+through Apple system libraries (IOReport, IOKit/SMC), which ship with macOS
+and are not redistributed.
