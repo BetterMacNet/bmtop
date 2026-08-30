@@ -34,3 +34,19 @@ jobs:
             dist/bmtop-macos-universal.tar.gz.sha256 \
             --title "bmtop $GITHUB_REF_NAME" \
             --generate-notes
+
+  # tap 是另一个仓库，上面那个 job 的 github.token 对它没有写权限，
+  # 所以单独一个 job + 单独一个 token。跑在 ubuntu 上：只用到
+  # curl / git / python3，不需要 macOS runner。
+  homebrew:
+    name: Bump Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    # 预发布标签（v1.2.3-rc1）不动 stable formula。
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bump bettermacnet/tap formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: ./scripts/bump-homebrew-formula.sh "$GITHUB_REF_NAME"

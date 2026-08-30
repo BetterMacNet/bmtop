@@ -219,11 +219,36 @@ IOReport group; the rows hide there).
 ./scripts/package-release.sh   # universal binary + tar.gz + sha256 in dist/
 ```
 
+### Cutting a release
+
+1. Bump `version` in `Cargo.toml`, run `cargo update -p bmtop -p bmtop-core -p bmtop-macos -p bmtop-tui`, commit as `chore: release vX.Y.Z`.
+2. Push `main`, wait for CI.
+3. Push a matching `vX.Y.Z` tag.
+
+The tag drives `.github/workflows/release.yml`, which validates the tag
+against the workspace version, builds the universal binary, publishes the
+GitHub release, and then bumps the `bmtop.rb` formula in
+[BetterMacNet/homebrew-tap](https://github.com/BetterMacNet/homebrew-tap) to
+the new source tarball and its sha256. Tags carrying a prerelease suffix
+(`v1.2.3-rc1`) skip the formula bump.
+
+The formula bump needs a `HOMEBREW_TAP_TOKEN` repository secret — a
+fine-grained PAT scoped to the tap repository with **Contents: read and
+write**. `github.token` cannot reach another repository. Without the secret
+that job fails and the GitHub release still succeeds, so a release is never
+left half-published; re-run the job after adding it.
+
+It runs `./scripts/bump-homebrew-formula.sh`, which is also usable by hand if
+CI is unavailable — it is idempotent, so re-running a release is safe:
+
+```sh
+DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.2.0   # print the diff only
+GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.2.0  # commit and push the bump
+```
+
 The workspace is split into `bmtop-core` (models, schema, i18n),
 `bmtop-macos` (native collectors), `bmtop-tui` (ratatui UI) and `bmtop`
-(CLI). Releases are cut by pushing a `v*` tag; CI validates the tag against
-the workspace version, builds the universal binary and publishes the GitHub
-release automatically.
+(CLI).
 
 ## License
 
