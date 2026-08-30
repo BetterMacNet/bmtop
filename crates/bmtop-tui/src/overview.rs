@@ -1,12 +1,12 @@
 //! 概览页：图标卡片仪表盘（mactop 紧凑布局风格）。
 //!
-//! 三行网格——CPU/GPU/内存、功耗/网络/磁盘、风扇/温度。标题即读数，
+//! 三行网格——CPU/GPU/内存、功耗/网络/磁盘、风扇/温度/能耗。标题即读数，
 //! 进程信息不在这里（模式 2 专责）。窄屏退化为单列堆叠。
 
 use crate::pages::{
     compact_ghz, fan_lines, sensor_group_lines, temp_gauge_line, thermal_level_label,
 };
-use crate::state::UiState;
+use crate::state::{total_energy_impact, UiState};
 use crate::widgets::*;
 use bmtop_core::{Strings, SystemSnapshot};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -18,6 +18,10 @@ use ratatui::Frame;
 const CARD_SPARKLINE_WIDTH: usize = 18;
 /// 卡片内的紧凑百分比条：一栏 40 列，16 格放不下尾缀。
 const CARD_GAUGE_WIDTH: usize = 11;
+/// 能耗卡列出几个进程。留一行给走势图，正好占满 Length(8) 的卡片。
+const ENERGY_CARD_TOP_PROCESSES: usize = 3;
+/// 能耗卡「进程名 + 数值」一行的总列宽，和走势图对齐。
+const CARD_ENERGY_NAME_WIDTH: usize = CARD_SPARKLINE_WIDTH;
 
 fn card_gauge(label: &str, value: Option<f64>, trailing: &str) -> Line<'static> {
     gauge_line_sized(label, value, trailing, CARD_GAUGE_WIDTH)
@@ -45,6 +49,7 @@ pub(crate) fn render_overview(
         disk_card(text, state, snapshot),
         fans_card(text, snapshot),
         temps_card(text, snapshot),
+        energy_card(text, state, snapshot),
     ];
 
     if area.width < NARROW_TERMINAL_COLUMNS {
@@ -72,7 +77,7 @@ pub(crate) fn render_overview(
         ])
         .split(area);
     let mut cards = cards.into_iter();
-    for (row, columns) in rows.iter().zip([3usize, 3, 2]) {
+    for (row, columns) in rows.iter().zip([3usize, 3, 3]) {
         let constraints = vec![Constraint::Ratio(1, columns as u32); columns];
         let cells = Layout::default()
             .direction(Direction::Horizontal)
@@ -342,6 +347,58 @@ fn power_card(text: &'static Strings, state: &UiState, snapshot: &SystemSnapshot
     }
 }
 
+/// ⚡ 能耗：全进程能耗影响合计 + 最耗电的几个进程 + 走势。
+/// 和功耗卡互补——那张是硬件侧瓦特，这张回答「谁在耗电」。
+fn energy_card(text: &'static Strings, state: &UiState, snapshot: &SystemSnapshot) -> Card {
+    let Some(total) = total_energy_impact(snapshot) else {
+        return Card {
+            title: format!("⚡ {}", text.label_energy),
+            secondary: String::new(),
+            lines: vec![Line::from(text.unavailable)],
+        };
+    };
+    let mut top: Vec<_> = snapshot
+        .processes
+        .iter()
+        .filter_map(|process| process.energy_impact.map(|impact| (process, impact)))
+        .collect();
+    top.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut lines: Vec<Line<'static>> = top
+        .iter()
+        .take(ENERGY_CARD_TOP_PROCESSES)
+        .map(|(process, impact)| {
+            let value = format!("{impact:.1}");
+            // 名字先截断再让数值右对齐，中文进程名不会把数值挤出卡片。
+            // 减 1 是名字与数值之间的那个空格，不减这一行会比走势图宽一列。
+            let width = CARD_ENERGY_NAME_WIDTH.saturating_sub(value.len() + 1);
+            Line::from(format!(
+                "{} {value}",
+                pad_label(&truncate_columns(&process.name, width), width)
+            ))
+        })
+        .collect();
+    lines.push(Line::from(sparkline(
+        state.energy_history(),
+        CARD_SPARKLINE_WIDTH,
+        None,
+    )));
+    Card {
+        title: format!(
+            "⚡ {} {}",
+            text.label_energy,
+            text.card_power_total
+                .replace("{total}", &format!("{total:.0}"))
+        ),
+        secondary: String::new(),
+        lines,
+    }
+}
+
 /// ⇅ 网络：收发走势 + 当前速率；副标题带衰减峰值。
 fn network_card(text: &'static Strings, state: &UiState, snapshot: &SystemSnapshot) -> Card {
     let lines = vec![
@@ -422,7 +479,7 @@ fn disk_card(text: &'static Strings, state: &UiState, snapshot: &SystemSnapshot)
 fn fans_card(text: &'static Strings, snapshot: &SystemSnapshot) -> Card {
     let soc = snapshot.soc.as_ref();
     let lines = match soc {
-        Some(soc) if !soc.fans.is_empty() => fan_lines(text, &soc.fans),
+        Some(soc) if !soc.fans.is_empty() => fan_lines(text, &soc.fans, CARD_GAUGE_WIDTH),
         Some(_) => vec![Line::from("--")],
         None => vec![Line::from(text.unavailable)],
     };
@@ -460,6 +517,7 @@ fn temps_card(text: &'static Strings, snapshot: &SystemSnapshot) -> Card {
                     lines.push(temp_gauge_line(
                         &format!("{} {}", group, text.label_temp),
                         celsius,
+                        CARD_GAUGE_WIDTH,
                     ));
                 }
             }

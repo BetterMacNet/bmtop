@@ -306,6 +306,8 @@ mod tests {
             cpu_percent: Some(1.0),
             gpu_percent: None,
             cpu_time_seconds: Some(12.0),
+            energy_impact: Some(64.9),
+            power_watts: Some(3.42),
             start_time_seconds: 10,
             start_time_microseconds: 20,
             disk_read_bytes: None,
@@ -973,6 +975,11 @@ mod tests {
         // o → GPU 降序（都无 GPU 值时保持稳定序）。
         press(&mut state, KeyCode::Char('o'));
         assert_eq!(state.sort_key, SortKey::Gpu);
+        // o → 能耗 → 功耗，再到内存（活动监视器的两列插在 GPU 之后）。
+        press(&mut state, KeyCode::Char('o'));
+        assert_eq!(state.sort_key, SortKey::Energy);
+        press(&mut state, KeyCode::Char('o'));
+        assert_eq!(state.sort_key, SortKey::Power);
         // o → 内存降序：1024 字节的在前（对齐 top 的 o=排序）。
         press(&mut state, KeyCode::Char('o'));
         assert_eq!(state.sort_key, SortKey::Memory);
@@ -986,6 +993,107 @@ mod tests {
         press(&mut state, KeyCode::Char('O'));
         let rendered = screen(&state, 120, 24);
         assert!(rendered.contains("PID↓"), "表头缺少排序标注:\n{rendered}");
+    }
+
+    #[test]
+    fn hide_idle_keeps_wakeup_heavy_processes() {
+        // 空闲唤醒多的后台进程 CPU 常年 0.0，正是能耗列要暴露的对象，
+        // 按 `i` 隐藏空闲时不能把它们一起抹掉。
+        let mut state = chinese(AppMode::Processes);
+        let mut snapshot = process_snapshot();
+        snapshot.processes.push({
+            let mut row = snapshot.processes[0].clone();
+            row.pid = 1205;
+            row.name = "Cursor Helper".into();
+            row.cpu_percent = Some(0.0);
+            row.energy_impact = Some(3.84);
+            row
+        });
+        state.set_snapshot(snapshot);
+        state.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        let pids: Vec<_> = state
+            .filtered_processes()
+            .iter()
+            .map(|(_, process)| process.pid)
+            .collect();
+        assert!(pids.contains(&1205), "唤醒型进程不该被隐藏: {pids:?}");
+    }
+
+    #[test]
+    fn energy_sort_keys_reach_both_new_columns() {
+        let mut state = chinese(AppMode::Processes);
+        let mut snapshot = rich_snapshot();
+        snapshot.processes.push({
+            let mut row = snapshot.processes[0].clone();
+            row.pid = 100;
+            // CPU 低但能耗高（唤醒多），正好证明能耗不是 CPU% 的别名。
+            row.cpu_percent = Some(0.5);
+            row.energy_impact = Some(115.9);
+            row.power_watts = Some(0.2);
+            row
+        });
+        state.set_snapshot(snapshot);
+        let press = |state: &mut UiState, code| {
+            state.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        };
+        let pids = |state: &UiState| {
+            state
+                .filtered_processes()
+                .iter()
+                .map(|(_, process)| process.pid)
+                .collect::<Vec<_>>()
+        };
+        press(&mut state, KeyCode::Char('E'));
+        assert_eq!(state.sort_key, SortKey::Energy);
+        assert_eq!(pids(&state), vec![100, 4242], "能耗降序应把 115.9 排在前");
+        press(&mut state, KeyCode::Char('W'));
+        assert_eq!(state.sort_key, SortKey::Power);
+        assert_eq!(pids(&state), vec![4242, 100], "功耗降序应把 3.42W 排在前");
+    }
+
+    #[test]
+    fn process_table_shows_energy_columns_only_when_wide() {
+        let mut state = chinese(AppMode::Processes);
+        state.set_snapshot(process_snapshot());
+        // 详情侧栏改成定宽 36 之后，120 列的常见终端也放得下这两列。
+        for width in [140, 120] {
+            let wide = screen(&state, width, 24);
+            assert!(wide.contains("能耗"), "{width} 列应有能耗表头:\n{wide}");
+            assert!(wide.contains("功耗"), "{width} 列应有功耗表头:\n{wide}");
+            assert!(wide.contains("64.9"), "{width} 列应渲染能耗读数:\n{wide}");
+            assert!(wide.contains("3.42W"), "{width} 列应渲染功耗读数:\n{wide}");
+        }
+        // 再窄下去命令列会被挤到认不出进程，两列让位。
+        for width in [110, 100] {
+            let narrow = screen(&state, width, 24);
+            assert!(
+                !narrow.contains("64.9"),
+                "{width} 列不应渲染能耗列:\n{narrow}"
+            );
+            assert!(
+                narrow.contains("fixture"),
+                "{width} 列仍要看得到进程名:\n{narrow}"
+            );
+        }
+        // 92 列以下没有详情侧栏，主表独占整屏，反而又放得下了。
+        let full_width = screen(&state, 91, 24);
+        assert!(
+            full_width.contains("能耗"),
+            "无侧栏时主表够宽，应有能耗列:\n{full_width}"
+        );
+    }
+
+    #[test]
+    fn overview_energy_card_lists_the_top_consumer() {
+        let mut state = chinese(AppMode::Overview);
+        state.set_snapshot(process_snapshot());
+        let rendered = screen(&state, 140, 40);
+        assert!(rendered.contains("能耗"), "概览缺少能耗卡:\n{rendered}");
+        assert!(
+            rendered.contains("fixture"),
+            "能耗卡应列出进程名:\n{rendered}"
+        );
+        assert!(rendered.contains("64.9"), "能耗卡应列出读数:\n{rendered}");
     }
 
     #[test]
@@ -1129,6 +1237,9 @@ mod tests {
         let mut idle = snapshot.processes[0].clone();
         idle.pid = 8;
         idle.cpu_percent = Some(0.0);
+        // 「空闲」现在是 CPU 与能耗双零；只有 CPU 为 0 的唤醒型进程要留下，
+        // 见 hide_idle_keeps_wakeup_heavy_processes。
+        idle.energy_impact = Some(0.0);
         let mut unknown = snapshot.processes[0].clone();
         unknown.pid = 9;
         unknown.cpu_percent = None;

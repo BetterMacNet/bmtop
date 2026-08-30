@@ -116,6 +116,7 @@ strings! {
     cpu_breakdown => "用户 {user} · 系统 {system} · 空闲 {idle}"
                    / "user {user} · sys {system} · idle {idle}",
     label_power => "功耗" / "Power",
+    label_energy => "能耗" / "Energy",
     label_temp  => "温度" / "Temp",
     label_freq  => "频率" / "Freq",
     power_summary => "CPU {cpu} · GPU {gpu} · ANE {ane} · 共 {total}"
@@ -178,6 +179,8 @@ strings! {
     process_user_filter   => " · 用户 {user}"     / " · user {user}",
     process_active_only   => " · 仅活跃"           / " · active only",
     process_count         => "{items} 项 · {threads} 线程" / "{items} procs · {threads} threads",
+    column_energy  => "能耗" / "NRG",
+    column_power   => "功耗" / "PWR",
     column_memory  => "内存" / "MEM",
     column_threads => "线程" / "THR",
     column_user    => "用户" / "USER",
@@ -209,6 +212,7 @@ strings! {
     help_ends      => "跳到首尾"             / "Jump to first / last",
     help_search    => "搜索过滤"             / "Search filter",
     help_sort      => "排序列 CPU/内存/PID"  / "Sort column CPU/MEM/PID",
+    help_sort_energy => "按能耗 / 功耗排序"   / "Sort by energy / power",
     help_sort_direction => "反转升降序"       / "Reverse sort order",
     help_user_filter    => "按用户过滤"       / "Filter by user",
     help_set_interval   => "设置采样间隔"     / "Set sampling interval",
@@ -225,6 +229,60 @@ strings! {
 
     // —— CLI ——
     cli_about       => "macOS 资源与硬件只读监控工具" / "Read-only macOS resource and hardware monitor",
+    // 这两条长文案必须写成物理上的一行：rustfmt 会把 `\` 续行拼掉，
+    // 续行前的缩进会被烤进字符串里，帮助里就会多出一片空格。
+    cli_long_about => "macOS 资源与硬件只读监控工具。\n\n不带子命令时进入交互式面板。每一个面板同时也是一个子命令，输出 json / jsonl / csv，契约版本固定，可直接喂给脚本。"
+                    / "Read-only macOS resource and hardware monitor.\n\nRun without a subcommand for the interactive dashboard. Every panel is also a subcommand with stable json / jsonl / csv output, so the same data is usable from scripts.",
+
+    // —— 子命令说明（clap 帮助里每行一句）——
+    cli_about_top      => "打开交互式面板（不带子命令时的默认行为）"
+                        / "Launch the interactive dashboard (the default when no subcommand is given)",
+    cli_about_ps       => "列出进程的 CPU、GPU、内存、能耗影响与估算功耗"
+                        / "List processes with CPU, GPU, memory, energy impact and estimated power",
+    cli_about_cpu      => "CPU 负载、每核占用，以及 Apple Silicon 的分簇频率与功耗"
+                        / "CPU load, per-core usage and (Apple Silicon) per-cluster frequency and power",
+    cli_about_memory   => "内存占用、交换空间与内存压力"
+                        / "Memory usage, swap and memory pressure",
+    cli_about_network  => "各网络接口吞吐，附链路类型（以太网速率 / Wi-Fi 代次）"
+                        / "Per-interface throughput plus link type (Ethernet speed / Wi-Fi generation)",
+    cli_about_disk     => "各卷容量与磁盘读写吞吐"
+                        / "Volume capacity and disk I/O throughput",
+    cli_about_gpu      => "GPU 占用、频率、功耗与每进程 GPU 时间"
+                        / "GPU utilisation, frequency, power and per-process GPU time",
+    cli_about_sensors  => "温度、风扇、热压力与电池"
+                        / "Temperatures, fans, thermal pressure and battery",
+    cli_about_hardware => "来自 system_profiler 的静态硬件清单"
+                        / "Static hardware inventory from system_profiler",
+    cli_about_doctor   => "逐项检查本机哪些数据源可读，不可读的说明原因"
+                        / "Check which data sources are readable on this machine, and why any are not",
+    cli_about_completion => "把 bmtop 的 shell 补全脚本打印到标准输出"
+                          / "Print a shell completion script for bmtop to stdout",
+    // 同上，单行；三条安装命令靠 \n 各自占一行。
+    cli_completion_long => "把 bmtop 的 shell 补全脚本打印到标准输出。\n\n它只负责输出脚本，不安装任何东西、不改任何文件。把输出重定向到你的 shell 启动时会读取的目录，然后开一个新 shell：\n\n  bash  bmtop completion bash > $(brew --prefix)/etc/bash_completion.d/bmtop\n  zsh   bmtop completion zsh  > $(brew --prefix)/share/zsh/site-functions/_bmtop\n  fish  bmtop completion fish > ~/.config/fish/completions/bmtop.fish\n\n没装 Homebrew 的话，bash 的 $BASH_COMPLETION_COMPAT_DIR 或 zsh 的 $fpath 里任意一个目录都行，`echo $fpath` 可以看到候选。\n\n装好之后按 <Tab> 能补全子命令、参数以及参数的取值——比如 `bmtop ps --sort <Tab>` 会列出 cpu / memory / pid / energy / power。"
+                         / "Print a shell completion script for bmtop to stdout.\n\nIt only writes the script to stdout — nothing is installed and no file is touched. Redirect it into the directory your shell loads at startup, then open a new shell:\n\n  bash  bmtop completion bash > $(brew --prefix)/etc/bash_completion.d/bmtop\n  zsh   bmtop completion zsh  > $(brew --prefix)/share/zsh/site-functions/_bmtop\n  fish  bmtop completion fish > ~/.config/fish/completions/bmtop.fish\n\nWithout Homebrew, any directory on bash's $BASH_COMPLETION_COMPAT_DIR or zsh's $fpath works; `echo $fpath` shows the candidates.\n\nOnce loaded, <Tab> completes subcommands, flags and flag values — for instance `bmtop ps --sort <Tab>` offers cpu / memory / pid / energy / power.",
+
+    // —— 全局与子命令参数说明 ——
+    cli_help_interval => "采样间隔，例如 `2s`、`500ms`" / "Sampling interval, e.g. `2s`, `500ms`",
+    cli_help_format   => "一次性子命令的输出格式" / "Output format for one-shot subcommands",
+    cli_help_watch    => "持续采样直到被中断，而不是只打印一次"
+                       / "Keep sampling until interrupted instead of printing once",
+    cli_help_count    => "采样 N 次后退出（隐含 --watch 的循环语义），供脚本使用"
+                       / "Sample N times then exit (implies the --watch loop); for scripting",
+    cli_help_enhanced => "合并一次 sudo powermetrics 采样（只有 gpu 和 sensors 接受）"
+                       / "Merge one sudo `powermetrics` sample in (only `gpu` and `sensors` accept it)",
+    cli_help_sensitive => "不脱敏硬件标识（序列号、UUID）"
+                        / "Do not redact hardware identifiers (serial numbers, UUIDs)",
+    cli_help_ps_pid   => "只看这一个 PID" / "Only this PID",
+    cli_help_ps_user  => "只看该用户拥有的进程" / "Only processes owned by this user",
+    cli_help_ps_sort  => "排序列：cpu | memory | pid | energy | power"
+                       / "Sort column: cpu | memory | pid | energy | power",
+    cli_help_ps_limit => "排序后只保留前 N 行" / "Keep only the first N rows (truncated after sorting)",
+    cli_help_top_mode => "直接打开某一页：1 概览、2 进程 …… 9 传感器"
+                       / "Open on a specific page: 1 overview, 2 processes, … 9 sensors",
+    cli_help_net_conn => "同时列出活动的网络连接" / "Also list active network connections",
+    cli_help_hw_cat   => "只看某一类，例如 `SPDisplaysDataType`；省略则全部列出"
+                       / "Limit to one category, e.g. `SPDisplaysDataType`; omit to list all",
+    cli_help_shell    => "为哪个 shell 生成脚本" / "Which shell to emit the script for",
     cli_lang_help   => "界面语言（zh 或 en），默认跟随 LC_ALL / LC_MESSAGES / LANG"
                      / "Interface language (zh or en); defaults to LC_ALL / LC_MESSAGES / LANG",
     cli_signal_sent => "已发送 {signal} 到 PID {pid}" / "Sent {signal} to PID {pid}",

@@ -64,7 +64,10 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
                 render_process_table(frame, area, state);
                 return;
             }
-            let split = split_two(Constraint::Percentage(67), Constraint::Percentage(33));
+            let split = split_two(
+                Constraint::Min(0),
+                Constraint::Length(PROCESS_DETAIL_COLUMNS),
+            );
             render_process_table(frame, split[0], state);
             render_process_detail(frame, split[1], state);
         }
@@ -237,6 +240,9 @@ fn render_section_detail(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
 pub(crate) fn render_process_table(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
     let text = state.strings();
     let rows = state.filtered_processes();
+    // 两列能耗要 14 列（6+6+两个间隔）。进程页表格只占屏宽 67%，
+    // 窄终端塞不下就整体收起，命令列宽度维持改动前的手感。
+    let show_energy = area.width >= process_energy_min_width();
     let table_rows = rows.iter().enumerate().map(|(index, (depth, process))| {
         let cpu = process
             .cpu_percent
@@ -255,10 +261,23 @@ pub(crate) fn render_process_table(frame: &mut Frame<'_>, area: Rect, state: &Ui
             .gpu_percent
             .map(|value| format!("{value:>5.1}"))
             .unwrap_or_else(|| "   - ".to_string());
-        let cells = [
-            process.pid.to_string(),
-            cpu,
-            gpu,
+        let mut cells = vec![process.pid.to_string(), cpu, gpu];
+        if show_energy {
+            cells.push(
+                process
+                    .energy_impact
+                    .map(|value| format!("{value:>5.1}"))
+                    .unwrap_or_else(|| "    - ".to_string()),
+            );
+            cells.push(right_align(
+                &process
+                    .power_watts
+                    .map(format_watts)
+                    .unwrap_or_else(|| "-".to_string()),
+                PROCESS_POWER_COLUMN_WIDTH as usize,
+            ));
+        }
+        cells.extend([
             memory,
             process
                 .thread_count
@@ -266,7 +285,7 @@ pub(crate) fn render_process_table(frame: &mut Frame<'_>, area: Rect, state: &Ui
                 .unwrap_or_else(|| "--".into()),
             process.user.clone(),
             command,
-        ];
+        ]);
         let style = if index == state.selected {
             Style::default().fg(Color::Black).bg(Color::Cyan)
         } else {
@@ -274,16 +293,18 @@ pub(crate) fn render_process_table(frame: &mut Frame<'_>, area: Rect, state: &Ui
         };
         Row::new(cells).style(style)
     });
-    let header = Row::new([
-        "PID",
-        "CPU%",
-        text.column_gpu,
+    let mut header_cells = vec!["PID", "CPU%", text.column_gpu];
+    if show_energy {
+        header_cells.push(text.column_energy);
+        header_cells.push(text.column_power);
+    }
+    header_cells.extend([
         text.column_memory,
         text.column_threads,
         text.column_user,
         text.column_command,
-    ])
-    .style(
+    ]);
+    let header = Row::new(header_cells).style(
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
@@ -293,21 +314,30 @@ pub(crate) fn render_process_table(frame: &mut Frame<'_>, area: Rect, state: &Ui
         .filter_map(|(_, process)| process.thread_count)
         .map(u64::from)
         .sum();
-    let table = Table::new(
-        table_rows,
-        [
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(6),
-            Constraint::Length(10),
-            Constraint::Length(7),
-            Constraint::Length(10),
-            Constraint::Min(10),
-        ],
-    );
+    // 名字带 `_column` 后缀：上面已经有个 `threads` 是线程总数，别让列宽把它盖掉。
+    let [pid_column, cpu_column, gpu_column, memory_column, threads_column, user_column] =
+        PROCESS_COLUMN_WIDTHS;
+    let mut widths = vec![
+        Constraint::Length(pid_column),
+        Constraint::Length(cpu_column),
+        Constraint::Length(gpu_column),
+    ];
+    if show_energy {
+        widths.push(Constraint::Length(PROCESS_ENERGY_COLUMN_WIDTH));
+        widths.push(Constraint::Length(PROCESS_POWER_COLUMN_WIDTH));
+    }
+    widths.extend([
+        Constraint::Length(memory_column),
+        Constraint::Length(threads_column),
+        Constraint::Length(user_column),
+        Constraint::Min(10),
+    ]);
+    let table = Table::new(table_rows, widths);
     let sort_label = match state.sort_key {
         SortKey::Cpu => text.mode_cpu,
         SortKey::Gpu => text.field_gpu,
+        SortKey::Energy => text.label_energy,
+        SortKey::Power => text.label_power,
         SortKey::Memory => text.column_memory,
         SortKey::Pid => "PID",
     };
@@ -502,7 +532,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, text: &'static Strings) {
     // 线框的帮助层是「快捷键 | 说明」双列网格，不是一串平铺文字。
-    let bindings: [(&str, &str); 22] = [
+    let bindings: [(&str, &str); 23] = [
         ("1…9 / F1…F9", text.help_modes),
         ("⌘1…⌘9", text.help_enhanced),
         ("↑ / ↓", text.help_move),
@@ -512,6 +542,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, text: &'static Strings) {
         ("/", text.help_search),
         ("u", text.help_user_filter),
         ("o / P / M / N", text.help_sort),
+        ("E / W", text.help_sort_energy),
         ("O / R", text.help_sort_direction),
         ("s / d", text.help_set_interval),
         ("+ / -", text.help_interval),

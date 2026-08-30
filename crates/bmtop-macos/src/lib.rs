@@ -1,13 +1,16 @@
 //! Native macOS collectors. Platform-specific `unsafe` code is isolated in the
 //! C shim and exposed here through owned Rust values.
 
+mod pmenergy;
 mod powermetrics;
 
+pub use pmenergy::{load_energy_coefficients, parse_energy_constants};
 pub use powermetrics::{parse_powermetrics_plist, sample_powermetrics, PowerMetricsSample};
 
 use bmtop_core::{
-    CpuMetrics, DiskVolume, GpuSnapshot, MemoryMetrics, NetworkInterfaceMetrics, ProcessCpuHistory,
-    ProcessRow, RefreshInterval, SystemSnapshot, ThreadRow,
+    CpuMetrics, DiskVolume, EnergyCoefficients, GpuSnapshot, MemoryMetrics,
+    NetworkInterfaceMetrics, ProcessCpuHistory, ProcessEnergyCounters, ProcessEnergyHistory,
+    ProcessRow, RefreshInterval, SocPower, SystemSnapshot, ThreadRow,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -71,6 +74,15 @@ mod ffi {
         pub system_ticks: u64,
         pub start_seconds: u64,
         pub start_microseconds: u64,
+        /// 顺序与 `bmtop_sys.h` 的注释一致：default / maintenance / background /
+        /// utility / legacy / user_initiated / user_interactive。
+        pub qos_ns: [u64; 7],
+        pub idle_wakeups: u64,
+        pub interrupt_wakeups: u64,
+        pub disk_read_bytes: u64,
+        pub disk_written_bytes: u64,
+        /// 0 = `proc_pid_rusage` 失败（无权限或进程已退出），上面几项不可信。
+        pub rusage_ok: u32,
         pub name: [u8; 64],
         pub path: [u8; 1024],
     }
@@ -90,6 +102,12 @@ mod ffi {
                 system_ticks: 0,
                 start_seconds: 0,
                 start_microseconds: 0,
+                qos_ns: [0; 7],
+                idle_wakeups: 0,
+                interrupt_wakeups: 0,
+                disk_read_bytes: 0,
+                disk_written_bytes: 0,
+                rusage_ok: 0,
                 name: [0; 64],
                 path: [0; 1024],
             }
@@ -323,6 +341,9 @@ pub struct MacCollector {
     previous_cores: Vec<ffi::CpuTicks>,
     previous_interfaces: HashMap<String, (u64, u64, Instant)>,
     process_history: ProcessCpuHistory,
+    energy_history: ProcessEnergyHistory,
+    /// pmenergy 系数表，只读一次（系统文件，进程生命周期内不会变）。
+    energy_coefficients: EnergyCoefficients,
     last_gpu: Option<GpuSnapshot>,
     /// uid → 用户名。以前每行每 uid fork 一次 `/usr/bin/id`，
     /// 1s 间隔 × 上千进程是真实的开销；uid 映射基本不变，缓存整个进程生命周期。
@@ -354,6 +375,8 @@ impl MacCollector {
             previous_cores: Vec::new(),
             previous_interfaces: HashMap::new(),
             process_history: ProcessCpuHistory::default(),
+            energy_history: ProcessEnergyHistory::default(),
+            energy_coefficients: pmenergy::load_energy_coefficients(),
             last_gpu: None,
             user_names: HashMap::new(),
             gpu_name: None,
@@ -422,6 +445,8 @@ impl MacCollector {
             let topology = self.topology.get_or_insert_with(soc::read_topology).clone();
             let disk_io = self.read_disk_io_rates(now);
             self.apply_gpu_percent(&mut processes, &soc_metrics, now);
+            // 功耗摊分要等 GPU% 算完（按 CPU/GPU 占比分账），所以排在后面。
+            apply_process_power(&mut processes, soc_metrics.as_ref().map(|soc| &soc.power));
             let link = self.read_link_cached(now);
             let fps = self.manage_fps(&mut capabilities);
             Ok(SystemSnapshot {
@@ -660,6 +685,24 @@ impl MacCollector {
                     value.system_ticks,
                     now,
                 );
+                // rusage 失败（无权限 / 刚退出）就不喂差分器，能耗列显示 `-`。
+                let energy_impact = (value.rusage_ok != 0).then(|| {
+                    self.energy_history.impact(
+                        value.pid,
+                        value.start_seconds,
+                        value.start_microseconds,
+                        ProcessEnergyCounters {
+                            qos_nanoseconds: value.qos_ns,
+                            cpu_nanoseconds: value.user_ticks.saturating_add(value.system_ticks),
+                            idle_wakeups: value.idle_wakeups,
+                            interrupt_wakeups: value.interrupt_wakeups,
+                            disk_read_bytes: value.disk_read_bytes,
+                            disk_written_bytes: value.disk_written_bytes,
+                        },
+                        &self.energy_coefficients,
+                        now,
+                    )
+                });
                 let user = user_name(value.uid, &mut self.user_names);
                 Some(ProcessRow {
                     pid: value.pid,
@@ -678,6 +721,8 @@ impl MacCollector {
                     cpu_time_seconds: Some(
                         (value.user_ticks.saturating_add(value.system_ticks)) as f64 / 1e9,
                     ),
+                    energy_impact: energy_impact.flatten(),
+                    power_watts: None,
                     start_time_seconds: value.start_seconds,
                     start_time_microseconds: value.start_microseconds,
                     disk_read_bytes: None,
@@ -849,6 +894,8 @@ fn ps_fallback(
                 cpu_percent,
                 gpu_percent: None,
                 cpu_time_seconds: None,
+                energy_impact: None,
+                power_watts: None,
                 start_time_seconds: 0,
                 start_time_microseconds: 0,
                 disk_read_bytes: None,
@@ -858,6 +905,40 @@ fn ps_fallback(
             })
         })
         .collect()
+}
+
+/// 估算每进程功耗：把 IOReport 实测的 CPU/GPU 封装瓦特按占用比摊下去。
+///
+/// 摊分基准用「本次快照所有进程的占用之和」而不是系统总占用，
+/// 这样这一列的合计恰好等于概览功耗卡的 CPU+GPU 读数（与
+/// `apply_gpu_percent` 的归一化是同一个思路）。
+fn apply_process_power(processes: &mut [ProcessRow], power: Option<&SocPower>) {
+    let Some(power) = power else {
+        return; // Intel / IOReport 不可用：整列 None，渲染成 `--`
+    };
+    if power.cpu_watts.is_none() && power.gpu_watts.is_none() {
+        return;
+    }
+    let sum = |values: &[ProcessRow], pick: fn(&ProcessRow) -> Option<f64>| -> f64 {
+        values.iter().filter_map(pick).sum()
+    };
+    let cpu_total = sum(processes, |row| row.cpu_percent);
+    let gpu_total = sum(processes, |row| row.gpu_percent);
+    for process in processes.iter_mut() {
+        let cpu = share(process.cpu_percent, cpu_total, power.cpu_watts);
+        let gpu = share(process.gpu_percent, gpu_total, power.gpu_watts);
+        process.power_watts = match (cpu, gpu) {
+            (None, None) => None,
+            (cpu, gpu) => Some(cpu.unwrap_or(0.0) + gpu.unwrap_or(0.0)),
+        };
+    }
+}
+
+/// 单个域的摊分；分母为 0（全空闲）时不摊，避免 0/0 放大成 NaN。
+fn share(value: Option<f64>, total: f64, watts: Option<f64>) -> Option<f64> {
+    let value = value?;
+    let watts = watts?;
+    (total > 0.0).then(|| (value / total * watts).max(0.0))
 }
 
 #[cfg(not(target_os = "macos"))]

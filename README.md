@@ -23,6 +23,10 @@
 - **Native SoC telemetry on Apple Silicon** — E/P cluster frequency and residency,
   CPU/GPU/ANE/DRAM power, system wall power, temperatures, fans and thermal
   pressure, read directly via IOReport/SMC. No `sudo`, no `powermetrics` daemon.
+- **Per-process energy** — Activity Monitor's Energy Impact, computed from the
+  same `/usr/share/pmenergy` coefficients Apple ships, plus an estimated
+  per-process wattage derived from the measured CPU/GPU package power. Both
+  columns are sortable; the overview summarises the top consumers.
 - **Everything in one dashboard** — processes, CPU, memory, network, disk I/O,
   GPU (including per-process usage and peak frequency with theoretical TFLOPS),
   battery, hardware and sensors.
@@ -75,6 +79,7 @@ subcommand and a machine-readable format:
 ```sh
 bmtop top                                  # one-shot table snapshot
 bmtop ps --sort memory --limit 10          # top memory consumers
+bmtop ps --sort energy --limit 10          # what is draining the battery
 bmtop memory --format json                 # single JSON snapshot
 bmtop network -n 60 -i 1s --format jsonl   # 60 samples, then exit
 bmtop gpu --enhanced                       # one sudo powermetrics sample merged in
@@ -113,7 +118,7 @@ switch modes; `bmtop doctor` reports the detection result as
 
 | Key | Action |
 |-----|--------|
-| `o` / `O` | Cycle sort column (CPU/MEM/PID) / reverse order |
+| `o` / `O` | Cycle sort column (CPU/GPU/NRG/PWR/MEM/PID) / reverse order |
 | `s` | Prompt for sampling interval (`2` = seconds, `500ms` works too) |
 | `u` | Filter by user (blank or `Esc` shows all) |
 
@@ -122,6 +127,7 @@ switch modes; `bmtop doctor` reports the detection result as
 | Key | Action |
 |-----|--------|
 | `P` / `M` / `N` | Sort by CPU / memory / PID |
+| `E` / `W` | Sort by energy impact / estimated watts |
 | `R` | Reverse sort order |
 | `d` | Alias for `s` |
 | `c` | Toggle full command paths |
@@ -189,6 +195,16 @@ merge GPU frequency/power and thermal pressure into the output; `--enhanced`
 is rejected elsewhere. Signals for another user's process also go through
 `sudo` only when explicitly requested. The TUI never runs as root and
 passwords are never stored.
+
+Energy Impact uses the `energy_constants` in `/usr/share/pmenergy/default.plist`
+(CPU time weighted per QoS class, wakeups, disk I/O) fed by `proc_pid_rusage` —
+no root, no `powermetrics`. Two deliberate deviations from Activity Monitor:
+per-process network packets are excluded (no unprivileged interface for them),
+and where `ri_pkg_idle_wkups` stays flat — as it does on Apple Silicon — the
+wakeup term falls back to `ri_interrupt_wkups`. Estimated watts splits the
+measured CPU/GPU package power across processes by CPU/GPU share, so the column
+sums to the overview power card; it is an attribution model, not a measurement,
+and it is absent when SoC data is unavailable.
 
 Hardware identifiers are redacted in JSON by default; use `--show-sensitive`
 only when the local output is trusted. DRAM/ANE bandwidth rows appear where

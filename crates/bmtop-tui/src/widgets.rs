@@ -21,6 +21,32 @@ pub(crate) const NETWORK_HISTORY_MAX: usize = 120;
 pub(crate) const DETAIL_SCROLL_STEP: u16 = 10;
 /// 低于这个列宽就不再左右分栏，改上下堆叠。
 pub(crate) const NARROW_TERMINAL_COLUMNS: u16 = 92;
+
+/// 进程详情侧栏的固定宽度。原来是 33% 比例——终端越宽侧栏跟着越胖，
+/// 可它装的是定长键值对（标签补到 10 列），多出来的宽度全是空白，
+/// 主表却因此挤不下能耗两列。内容需要多少就给多少。
+pub(crate) const PROCESS_DETAIL_COLUMNS: u16 = 36;
+
+/// 进程表定长列宽：PID / CPU% / GPU% / 内存 / 线程 / 用户。命令列吃剩下的。
+/// 内存最宽是 `1023.9G`（7 列），线程数四位封顶，都不需要原来的 10 和 7。
+pub(crate) const PROCESS_COLUMN_WIDTHS: [u16; 6] = [7, 7, 6, 8, 5, 10];
+pub(crate) const PROCESS_ENERGY_COLUMN_WIDTH: u16 = 6;
+pub(crate) const PROCESS_POWER_COLUMN_WIDTH: u16 = 6;
+/// 命令列窄于这个数就认不出是哪个进程了，此时能耗两列让位。
+const PROCESS_COMMAND_MIN_COLUMNS: u16 = 16;
+
+/// 显示能耗 / 功耗两列所需的最小表格宽度。
+/// 跟着上面的常量走，改列宽不用再回来改一个手算的魔数。
+pub(crate) const fn process_energy_min_width() -> u16 {
+    let mut fixed = PROCESS_ENERGY_COLUMN_WIDTH + PROCESS_POWER_COLUMN_WIDTH;
+    let mut index = 0;
+    while index < PROCESS_COLUMN_WIDTHS.len() {
+        fixed += PROCESS_COLUMN_WIDTHS[index];
+        index += 1;
+    }
+    // 9 列之间 8 个间隔（column_spacing(1)）+ 左右边框。
+    fixed + 8 + 2 + PROCESS_COMMAND_MIN_COLUMNS
+}
 /// 堆叠模式下分区列表占的行数。
 pub(crate) const SECTION_LIST_STACKED_HEIGHT: u16 = 7;
 pub(crate) const SPARKLINE_LEVELS: [char; 8] = [

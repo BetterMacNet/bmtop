@@ -37,6 +37,8 @@ fn usage(message: impl Into<String>) -> anyhow::Error {
 }
 
 #[derive(Debug, Parser)]
+// 所有面向用户的帮助文案都在 i18n.rs，由 execute() 在运行时按语言注入；
+// 这里不写死英文，否则 `--lang zh --help` 会中英各一半。
 #[command(name = "bmtop", version)]
 struct Cli {
     #[command(subcommand)]
@@ -55,7 +57,6 @@ struct Cli {
     format: OutputFormat,
     #[arg(long, global = true)]
     watch: bool,
-    /// 连续采样 N 次后退出（隐含 --watch 的循环语义），供脚本使用。
     #[arg(short = 'n', long, global = true, value_name = "N")]
     count: Option<u32>,
     #[arg(long, global = true)]
@@ -77,7 +78,6 @@ enum Command {
         user: Option<String>,
         #[arg(long, default_value = "cpu")]
         sort: String,
-        /// 只输出前 N 行（排序后截断）。
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
     },
@@ -150,12 +150,67 @@ fn preferred_language<I: IntoIterator<Item = String>>(arguments: I) -> Language 
     Language::from_environment()
 }
 
+/// 把 i18n 里的帮助文案挂到 clap 上。
+///
+/// 文案不能写成 `#[command(about = "…")]` 那样的属性：那是编译期常量，
+/// 而 bmtop 的帮助要跟着 `--lang` / LANG 走（见 cli_contracts 的两个语言用例）。
+fn localized_help(command: clap::Command, text: &'static bmtop_core::Strings) -> clap::Command {
+    let mut command = command
+        .about(text.cli_about)
+        .long_about(text.cli_long_about)
+        .mut_arg("lang", |argument| argument.help(text.cli_lang_help))
+        .mut_arg("interval", |argument| argument.help(text.cli_help_interval))
+        .mut_arg("format", |argument| argument.help(text.cli_help_format))
+        .mut_arg("watch", |argument| argument.help(text.cli_help_watch))
+        .mut_arg("count", |argument| argument.help(text.cli_help_count))
+        .mut_arg("enhanced", |argument| argument.help(text.cli_help_enhanced))
+        .mut_arg("show_sensitive", |argument| {
+            argument.help(text.cli_help_sensitive)
+        });
+    for (name, about) in [
+        ("top", text.cli_about_top),
+        ("ps", text.cli_about_ps),
+        ("cpu", text.cli_about_cpu),
+        ("memory", text.cli_about_memory),
+        ("network", text.cli_about_network),
+        ("disk", text.cli_about_disk),
+        ("gpu", text.cli_about_gpu),
+        ("sensors", text.cli_about_sensors),
+        ("hardware", text.cli_about_hardware),
+        ("doctor", text.cli_about_doctor),
+        ("completion", text.cli_about_completion),
+    ] {
+        command = command.mut_subcommand(name, |sub| sub.about(about));
+    }
+    // 各子命令自己的参数说明。
+    command
+        .mut_subcommand("top", |sub| {
+            sub.mut_arg("mode", |argument| argument.help(text.cli_help_top_mode))
+        })
+        .mut_subcommand("ps", |sub| {
+            sub.mut_arg("pid", |argument| argument.help(text.cli_help_ps_pid))
+                .mut_arg("user", |argument| argument.help(text.cli_help_ps_user))
+                .mut_arg("sort", |argument| argument.help(text.cli_help_ps_sort))
+                .mut_arg("limit", |argument| argument.help(text.cli_help_ps_limit))
+        })
+        .mut_subcommand("network", |sub| {
+            sub.mut_arg("connections", |argument| {
+                argument.help(text.cli_help_net_conn)
+            })
+        })
+        .mut_subcommand("hardware", |sub| {
+            sub.mut_arg("category", |argument| argument.help(text.cli_help_hw_cat))
+        })
+        .mut_subcommand("completion", |sub| {
+            sub.long_about(text.cli_completion_long)
+                .mut_arg("shell", |argument| argument.help(text.cli_help_shell))
+        })
+}
+
 fn execute() -> Result<()> {
     let language = preferred_language(std::env::args().skip(1));
     let text = language.strings();
-    let command = Cli::command()
-        .about(text.cli_about)
-        .mut_arg("lang", |argument| argument.help(text.cli_lang_help));
+    let command = localized_help(Cli::command(), text);
     let cli = Cli::from_arg_matches(&command.get_matches())?;
     // 参数解析完再取一次：显式 `--lang` 优先，预扫只是为了让帮助文案对上语言。
     let language = cli.lang.unwrap_or(language);
@@ -168,7 +223,7 @@ fn execute() -> Result<()> {
         ));
     }
     match cli.command {
-        Some(Command::Completion { shell }) => completion(shell),
+        Some(Command::Completion { shell }) => completion(shell, language),
         Some(Command::Hardware { category }) => run_hardware(
             category.as_deref(),
             cli.show_sensitive,
@@ -440,6 +495,20 @@ fn filter_processes(
             .processes
             .sort_by_key(|process| std::cmp::Reverse(process.resident_bytes.unwrap_or_default())),
         "pid" => snapshot.processes.sort_by_key(|process| process.pid),
+        "energy" | "nrg" => snapshot.processes.sort_by(|left, right| {
+            right
+                .energy_impact
+                .unwrap_or(0.0)
+                .partial_cmp(&left.energy_impact.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        "power" | "watts" => snapshot.processes.sort_by(|left, right| {
+            right
+                .power_watts
+                .unwrap_or(0.0)
+                .partial_cmp(&left.power_watts.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
         _ => snapshot.processes.sort_by(|left, right| {
             right
                 .cpu_percent
@@ -734,8 +803,9 @@ fn run_doctor(format: OutputFormat, language: Language) -> Result<()> {
     Ok(())
 }
 
-fn completion(shell: Shell) -> Result<()> {
-    let mut command = Cli::command();
+fn completion(shell: Shell, language: Language) -> Result<()> {
+    // 带上帮助文案：zsh / fish 的补全菜单会把 about 显示在候选项旁边。
+    let mut command = localized_help(Cli::command(), language.strings());
     let name = "bmtop";
     match shell {
         Shell::Bash => generate(shells::Bash, &mut command, name, &mut io::stdout()),
@@ -877,6 +947,8 @@ mod tests {
             cpu_percent: Some(cpu),
             gpu_percent: None,
             cpu_time_seconds: None,
+            energy_impact: Some(cpu),
+            power_watts: Some(cpu / 10.0),
             start_time_seconds: 0,
             start_time_microseconds: 0,
             disk_read_bytes: None,

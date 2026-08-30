@@ -128,6 +128,26 @@ size_t bmtop_read_processes(bmtop_process_raw *out, size_t capacity) {
         item->system_ticks = task.pti_total_system;
         item->start_seconds = bsd.pbi_start_tvsec;
         item->start_microseconds = bsd.pbi_start_tvusec;
+        /* 能耗影响的原料：QoS 分档 CPU 时间 + 空闲唤醒 + 磁盘字节。
+           固定要 V3 而不是 RUSAGE_INFO_CURRENT——CURRENT 随 SDK 漂移（当前是 v6），
+           而 V3 自 10.9 起布局冻结，且已含这里要的全部字段。
+           无权限 / 进程已退出时 rusage_ok 留 0，上层据此给 None 而不是 0。 */
+        struct rusage_info_v3 usage;
+        memset(&usage, 0, sizeof(usage));
+        if (proc_pid_rusage(pid, RUSAGE_INFO_V3, (rusage_info_t *)&usage) == 0) {
+            item->qos_ns[0] = usage.ri_cpu_time_qos_default;
+            item->qos_ns[1] = usage.ri_cpu_time_qos_maintenance;
+            item->qos_ns[2] = usage.ri_cpu_time_qos_background;
+            item->qos_ns[3] = usage.ri_cpu_time_qos_utility;
+            item->qos_ns[4] = usage.ri_cpu_time_qos_legacy;
+            item->qos_ns[5] = usage.ri_cpu_time_qos_user_initiated;
+            item->qos_ns[6] = usage.ri_cpu_time_qos_user_interactive;
+            item->idle_wakeups = usage.ri_pkg_idle_wkups;
+            item->interrupt_wakeups = usage.ri_interrupt_wkups;
+            item->disk_read_bytes = usage.ri_diskio_bytesread;
+            item->disk_written_bytes = usage.ri_diskio_byteswritten;
+            item->rusage_ok = 1;
+        }
         proc_name(pid, item->name, sizeof(item->name));
         proc_pidpath(pid, item->path, sizeof(item->path));
     }

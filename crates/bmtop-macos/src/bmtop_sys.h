@@ -3,7 +3,11 @@
 
 typedef struct { uint64_t user, system, idle, nice; } bmtop_cpu_ticks;
 typedef struct { uint64_t total_bytes, free_pages, active_pages, inactive_pages, wired_pages, compressed_pages, purgeable_pages, swapins, swapouts, swap_total_bytes, swap_used_bytes, page_size; } bmtop_memory_raw;
-typedef struct { int32_t pid, parent_pid; uint32_t uid, status; int32_t thread_count, running_threads; uint64_t resident_bytes, virtual_bytes, user_ticks, system_ticks, start_seconds, start_microseconds; char name[64]; char path[1024]; } bmtop_process_raw;
+/* qos_ns 的下标顺序与 bmtop_core 的 QOS_WEIGHT_INDEX 一一对应，改一边必须改另一边：
+   0 default, 1 maintenance, 2 background, 3 utility, 4 legacy,
+   5 user_initiated, 6 user_interactive。 */
+#define BMTOP_QOS_BUCKETS 7
+typedef struct { int32_t pid, parent_pid; uint32_t uid, status; int32_t thread_count, running_threads; uint64_t resident_bytes, virtual_bytes, user_ticks, system_ticks, start_seconds, start_microseconds; uint64_t qos_ns[BMTOP_QOS_BUCKETS]; uint64_t idle_wakeups, interrupt_wakeups, disk_read_bytes, disk_written_bytes; uint32_t rusage_ok; char name[64]; char path[1024]; } bmtop_process_raw;
 typedef struct { char name[64]; uint64_t received_bytes, sent_bytes; } bmtop_interface_raw;
 typedef struct { double utilization_percent, idle_percent; } bmtop_gpu_raw;
 typedef struct { uint64_t thread_id; int32_t run_state; double cpu_percent; char name[64]; } bmtop_thread_raw;

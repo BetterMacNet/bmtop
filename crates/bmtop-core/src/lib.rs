@@ -1,9 +1,11 @@
 //! Platform-independent models and invariants for bmtop.
 
+mod energy;
 mod extras;
 mod i18n;
 mod soc;
 
+pub use energy::{EnergyCoefficients, ProcessEnergyCounters, ProcessEnergyHistory, QOS_BUCKETS};
 pub use extras::{
     format_link_speed, gpu_tflops_fp32, BatteryInfo, DiskIoRates, DisplayFps, EthernetLink,
     LinkInfo, RdmaDevice, RdmaStatus, TbBus, TbDevice, WifiLink,
@@ -261,6 +263,13 @@ pub struct ProcessRow {
     /// 进程累计 CPU 时间（秒，user+system）。
     #[serde(default)]
     pub cpu_time_seconds: Option<f64>,
+    /// 能耗影响，对齐活动监视器的能耗列（无量纲，见 [`EnergyCoefficients`]）。
+    #[serde(default)]
+    pub energy_impact: Option<f64>,
+    /// 估算功耗：把 IOReport 实测的 CPU/GPU 封装瓦特按占用比摊到进程。
+    /// 无 SoC 读数（Intel / IOReport 初始化失败）时为 `None`。
+    #[serde(default)]
+    pub power_watts: Option<f64>,
     pub start_time_seconds: u64,
     pub start_time_microseconds: u64,
     /// 以下三项只在「详情路径」（选中进程 / `ps --pid`）按需填充，

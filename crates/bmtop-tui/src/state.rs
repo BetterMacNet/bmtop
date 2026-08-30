@@ -22,11 +22,15 @@ pub enum ProcessSignalKind {
     Kill,
 }
 
-/// 进程表排序列。`s` 循环切换，`S` 反转升降序（对齐 top 的 o/O 心智）。
+/// 进程表排序列。`o` 循环切换，`O` / `R` 反转升降序（对齐 top 的 o/O 心智）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     Cpu,
     Gpu,
+    /// 能耗影响（活动监视器口径）。
+    Energy,
+    /// 估算功耗（瓦特）。
+    Power,
     Memory,
     Pid,
 }
@@ -35,7 +39,9 @@ impl SortKey {
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Cpu => Self::Gpu,
-            Self::Gpu => Self::Memory,
+            Self::Gpu => Self::Energy,
+            Self::Energy => Self::Power,
+            Self::Power => Self::Memory,
             Self::Memory => Self::Pid,
             Self::Pid => Self::Cpu,
         }
@@ -117,6 +123,7 @@ pub struct UiState {
     cpu_history: VecDeque<f64>,
     memory_history: VecDeque<f64>,
     power_history: VecDeque<f64>,
+    energy_history: VecDeque<f64>,
     receive_peak: f64,
     send_peak: f64,
     /// 屏幕 FPS 开关（`f` 键），随下一次采样请求带给采集器。
@@ -160,6 +167,7 @@ impl Default for UiState {
             cpu_history: VecDeque::new(),
             memory_history: VecDeque::new(),
             power_history: VecDeque::new(),
+            energy_history: VecDeque::new(),
             receive_peak: 0.0,
             send_peak: 0.0,
             fps_enabled: false,
@@ -248,6 +256,10 @@ impl UiState {
         {
             push_bounded(&mut self.power_history, watts);
         }
+        // 能耗同理：首个采样每行都是 None，此时不记点而不是记 0。
+        if let Some(total) = total_energy_impact(snapshot) {
+            push_bounded(&mut self.energy_history, total);
+        }
         self.record_network_rates(snapshot);
     }
 
@@ -291,6 +303,10 @@ impl UiState {
 
     pub fn power_history(&self) -> &VecDeque<f64> {
         &self.power_history
+    }
+
+    pub fn energy_history(&self) -> &VecDeque<f64> {
+        &self.energy_history
     }
 
     /// 上下行合并的速率序列，概览里只放得下一条走势。
@@ -406,8 +422,12 @@ impl UiState {
                     || process.name.to_ascii_lowercase().contains(&query)
                     || process.pid.to_string().contains(&query))
                     && (user.is_empty() || process.user.to_ascii_lowercase().contains(&user))
-                    // CPU 未知（首个样本）的行保留，只藏确定为 0 的。
-                    && (!self.hide_idle || process.cpu_percent.is_none_or(|value| value > 0.0))
+                    // CPU 未知（首个样本）的行保留，只藏确定为 0 的；
+                    // 但唤醒频繁的进程 CPU 常年是 0.0 而能耗不低，
+                    // 那正是能耗列要暴露的东西，不能被「隐藏空闲」抹掉。
+                    && (!self.hide_idle
+                        || process.cpu_percent.is_none_or(|value| value > 0.0)
+                        || process.energy_impact.is_some_and(|value| value > 0.0))
             })
             .collect();
         // 降序是默认视角（大的在前）；PID 也遵守同一方向开关，行为可预期。
@@ -420,6 +440,16 @@ impl UiState {
                 .gpu_percent
                 .unwrap_or(0.0)
                 .partial_cmp(&left.gpu_percent.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal),
+            SortKey::Energy => right
+                .energy_impact
+                .unwrap_or(0.0)
+                .partial_cmp(&left.energy_impact.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal),
+            SortKey::Power => right
+                .power_watts
+                .unwrap_or(0.0)
+                .partial_cmp(&left.power_watts.unwrap_or(0.0))
                 .unwrap_or(std::cmp::Ordering::Equal),
             SortKey::Memory => right.resident_bytes.cmp(&left.resident_bytes),
             SortKey::Pid => right.pid.cmp(&left.pid),
@@ -562,6 +592,9 @@ impl UiState {
             KeyCode::Char('P') => self.sort_key = SortKey::Cpu,
             KeyCode::Char('M') => self.sort_key = SortKey::Memory,
             KeyCode::Char('N') => self.sort_key = SortKey::Pid,
+            // 活动监视器的「能耗」标签页心智：E 能耗影响，W 瓦特。
+            KeyCode::Char('E') => self.sort_key = SortKey::Energy,
+            KeyCode::Char('W') => self.sort_key = SortKey::Power,
             KeyCode::Char('s') | KeyCode::Char('d') => {
                 self.interval_input.clear();
                 self.input_mode = InputMode::Interval;
@@ -715,6 +748,20 @@ fn tree_order(rows: Vec<&bmtop_core::ProcessRow>) -> Vec<(usize, &bmtop_core::Pr
 }
 
 /// `s` 提示符的输入：裸数字按秒（top 语义），`500ms`/`2s` 也接受。
+/// 全进程能耗影响求和。没有任何一行拿到读数（首个采样 / rusage 全失败）时
+/// 返回 `None`，让走势和卡片显示「无数据」而不是 0。
+pub(crate) fn total_energy_impact(snapshot: &SystemSnapshot) -> Option<f64> {
+    let mut total = None;
+    for impact in snapshot
+        .processes
+        .iter()
+        .filter_map(|row| row.energy_impact)
+    {
+        *total.get_or_insert(0.0) += impact;
+    }
+    total
+}
+
 pub(crate) fn parse_interval_input(value: &str) -> Option<u64> {
     let trimmed = value.trim();
     if let Some(millis) = trimmed.strip_suffix("ms") {

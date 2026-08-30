@@ -266,8 +266,27 @@ fn ps_rows_carry_gpu_and_vsz_fields() {
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let row = &value["data"]["processes"][0];
-    for key in ["gpu_percent", "virtual_bytes", "cpu_time_seconds"] {
+    for key in [
+        "gpu_percent",
+        "virtual_bytes",
+        "cpu_time_seconds",
+        "energy_impact",
+        "power_watts",
+    ] {
         assert!(row.get(key).is_some(), "process row must carry {key}");
+    }
+}
+
+#[test]
+fn ps_accepts_the_energy_sort_keys() {
+    for key in ["energy", "nrg", "power", "watts"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+            .args(["ps", "--sort", key, "--limit", "3", "--format", "json"])
+            .output()
+            .expect("bmtop binary should run");
+        assert!(output.status.success(), "--sort {key} must be accepted");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(value["data"]["processes"].is_array());
     }
 }
 

@@ -495,6 +495,7 @@ pub(crate) fn render_sensors(
             lines.push(temp_gauge_line(
                 &format!("{} {}", group, text.label_temp),
                 celsius,
+                GAUGE_WIDTH,
             ));
         }
     }
@@ -507,7 +508,7 @@ pub(crate) fn render_sensors(
 
     if !soc.fans.is_empty() {
         lines.push(Line::from(""));
-        lines.extend(fan_lines(text, &soc.fans));
+        lines.extend(fan_lines(text, &soc.fans, GAUGE_WIDTH));
     }
 
     if let Some(battery) = &snapshot.battery {
@@ -584,9 +585,12 @@ pub(crate) fn sensor_group_lines(
 
 /// 风扇行（传感器页与概览风扇卡共用），每风扇两行：
 /// `Fan 0     ████░░  2390 / 6898 RPM` + 缩进的目标/范围。
+/// `gauge_columns`：传感器页有整屏宽度用 [`GAUGE_WIDTH`]，
+/// 概览卡片只有三分之一屏，得用窄条否则 RPM 读数会被裁掉。
 pub(crate) fn fan_lines(
     text: &'static Strings,
     fans: &[bmtop_core::FanReading],
+    gauge_columns: usize,
 ) -> Vec<Line<'static>> {
     fans.iter()
         .flat_map(|fan| {
@@ -596,7 +600,7 @@ pub(crate) fn fan_lines(
                         pad_field_label(&fan.name, GAUGE_LABEL_COLUMNS),
                         Style::default().fg(Color::Gray),
                     ),
-                    gauge(fan.percent(), GAUGE_WIDTH),
+                    gauge(fan.percent(), gauge_columns),
                     Span::raw(format!(
                         "  {}",
                         text.fan_rpm
@@ -620,7 +624,7 @@ pub(crate) fn fan_lines(
 }
 
 /// 温度 gauge：0–110°C 固定量程，右侧显示实际摄氏度。
-pub(crate) fn temp_gauge_line(label: &str, celsius: f64) -> Line<'static> {
+pub(crate) fn temp_gauge_line(label: &str, celsius: f64, gauge_columns: usize) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             pad_field_label(label, GAUGE_LABEL_COLUMNS),
@@ -628,7 +632,7 @@ pub(crate) fn temp_gauge_line(label: &str, celsius: f64) -> Line<'static> {
         ),
         gauge(
             Some((celsius / TEMP_GAUGE_MAX_CELSIUS * 100.0).clamp(0.0, 100.0)),
-            GAUGE_WIDTH,
+            gauge_columns,
         ),
         Span::styled(
             format!("  {:>7}", format_celsius(celsius)),
