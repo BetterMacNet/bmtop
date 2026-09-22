@@ -1,11 +1,15 @@
 //! RDMA 状态（macOS 26.2+ 的 rdma_ctl / ibv_devinfo）。子进程 + 纯解析。
 
 use bmtop_core::{RdmaDevice, RdmaStatus};
-use std::process::Command;
+use std::{ffi::OsStr, path::Path, time::Duration};
 
 /// 一次完整探测。调用方负责节流（约 10s；两个子进程不便宜）。
 pub fn read_rdma_status() -> RdmaStatus {
-    let output = Command::new("rdma_ctl").arg("status").output();
+    let ctl = ["/usr/bin/rdma_ctl", "/usr/sbin/rdma_ctl"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+        .unwrap_or("/usr/bin/rdma_ctl");
+    let output = crate::command::output(OsStr::new(ctl), &["status"], Duration::from_secs(3));
     let Ok(output) = output else {
         return RdmaStatus {
             available: false,
@@ -22,8 +26,16 @@ pub fn read_rdma_status() -> RdmaStatus {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_rdma_ctl(&stdout, || {
-        Command::new("ibv_devinfo")
-            .output()
+        let path = [
+            "/usr/bin/ibv_devinfo",
+            "/usr/sbin/ibv_devinfo",
+            "/opt/homebrew/bin/ibv_devinfo",
+            "/usr/local/bin/ibv_devinfo",
+        ]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+        .unwrap_or("/usr/bin/ibv_devinfo");
+        crate::command::output(OsStr::new(path), &[], Duration::from_secs(3))
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())

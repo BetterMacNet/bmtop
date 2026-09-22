@@ -1,7 +1,21 @@
 use std::process::Command;
 
+fn binary() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bmtop"));
+    command.arg("--no-config");
+    for key in [
+        "BMTOP_CONFIG",
+        "BMTOP_LANG",
+        "BMTOP_INTERVAL",
+        "BMTOP_PRIVACY",
+    ] {
+        command.env_remove(key);
+    }
+    command
+}
+
 fn help_with(language: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["--lang", language, "--help"])
         .env_remove("LC_ALL")
         .env_remove("LC_MESSAGES")
@@ -13,7 +27,7 @@ fn help_with(language: &str) -> String {
 
 #[test]
 fn help_lists_primary_commands() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .arg("--help")
         .output()
         .expect("bmtop binary should run");
@@ -43,7 +57,7 @@ fn help_text_follows_the_language_flag() {
 #[test]
 fn help_language_falls_back_to_the_locale_environment() {
     let run = |locale: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+        let output = binary()
             .arg("--help")
             .env_remove("LC_ALL")
             .env_remove("LC_MESSAGES")
@@ -60,7 +74,7 @@ fn help_language_falls_back_to_the_locale_environment() {
 
 #[test]
 fn invalid_language_is_rejected_with_a_clear_message() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["--lang", "fr", "--help"])
         .output()
         .expect("bmtop binary should run");
@@ -75,7 +89,7 @@ fn invalid_language_is_rejected_with_a_clear_message() {
 #[test]
 fn doctor_output_note_is_translated() {
     let run = |language: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+        let output = binary()
             .args(["--lang", language, "doctor", "--format", "json"])
             .output()
             .expect("bmtop binary should run");
@@ -86,8 +100,9 @@ fn doctor_output_note_is_translated() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn memory_json_envelope_follows_schema_v2() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["memory", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -108,8 +123,9 @@ fn memory_json_envelope_follows_schema_v2() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn ps_limit_caps_the_row_count() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["ps", "--limit", "3", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -121,20 +137,20 @@ fn ps_limit_caps_the_row_count() {
 
 #[test]
 fn usage_errors_exit_with_sysexits_64() {
-    // CSV 不支持 gpu。
-    let csv = Command::new(env!("CARGO_BIN_EXE_bmtop"))
-        .args(["gpu", "--format", "csv"])
+    // CSV 不支持嵌套传感器报告；GPU 摘要现在支持 CSV。
+    let csv = binary()
+        .args(["sensors", "--format", "csv"])
         .output()
         .expect("bmtop binary should run");
     assert_eq!(csv.status.code(), Some(64));
     // --enhanced 只接在 gpu / sensors 上。
-    let enhanced = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let enhanced = binary()
         .args(["memory", "--enhanced"])
         .output()
         .expect("bmtop binary should run");
     assert_eq!(enhanced.status.code(), Some(64));
     // 非法 interval。
-    let interval = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let interval = binary()
         .args(["memory", "-i", "1h"])
         .output()
         .expect("bmtop binary should run");
@@ -142,8 +158,9 @@ fn usage_errors_exit_with_sysexits_64() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn count_flag_emits_exactly_n_jsonl_samples() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["memory", "-n", "2", "-i", "250ms", "--format", "jsonl"])
         .output()
         .expect("bmtop binary should run");
@@ -159,8 +176,9 @@ fn count_flag_emits_exactly_n_jsonl_samples() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn cpu_json_carries_soc_and_topology_additively() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["cpu", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -196,8 +214,9 @@ fn cpu_json_carries_soc_and_topology_additively() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn sensors_json_keeps_legacy_key_and_adds_soc() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["sensors", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -217,7 +236,7 @@ fn sensors_json_keeps_legacy_key_and_adds_soc() {
 
 #[test]
 fn doctor_reports_soc_probe() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["doctor", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -233,8 +252,9 @@ fn doctor_reports_soc_probe() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn memory_and_network_json_carry_additive_extras() {
-    let memory = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let memory = binary()
         .args(["memory", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -245,7 +265,7 @@ fn memory_and_network_json_carry_additive_extras() {
         "memory data must carry bandwidth key (may be null)"
     );
 
-    let network = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let network = binary()
         .args(["network", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -258,8 +278,9 @@ fn memory_and_network_json_carry_additive_extras() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn ps_rows_carry_gpu_and_vsz_fields() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["ps", "--limit", "1", "--format", "json"])
         .output()
         .expect("bmtop binary should run");
@@ -278,9 +299,10 @@ fn ps_rows_carry_gpu_and_vsz_fields() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn ps_accepts_the_energy_sort_keys() {
     for key in ["energy", "nrg", "power", "watts"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+        let output = binary()
             .args(["ps", "--sort", key, "--limit", "3", "--format", "json"])
             .output()
             .expect("bmtop binary should run");
@@ -292,7 +314,7 @@ fn ps_accepts_the_energy_sort_keys() {
 
 #[test]
 fn doctor_reports_extras_probe() {
-    let output = Command::new(env!("CARGO_BIN_EXE_bmtop"))
+    let output = binary()
         .args(["doctor", "--format", "json"])
         .output()
         .expect("bmtop binary should run");

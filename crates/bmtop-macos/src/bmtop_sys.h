@@ -23,6 +23,9 @@ int bmtop_read_process_io(int32_t pid, uint64_t *disk_read_bytes, uint64_t *disk
 size_t bmtop_read_threads(int32_t pid, bmtop_thread_raw *out, size_t capacity);
 /* 系统级磁盘 I/O 累计计数（开机以来，全卷求和）。0 成功，-1 失败。 */
 int bmtop_read_disk_io(uint64_t *read_bytes, uint64_t *write_bytes, uint64_t *read_ops, uint64_t *write_ops);
-/* 每进程累计 GPU 时间（纳秒）。返回填入条数。 */
+/* GPU client time (ns). Returns observed count, may exceed capacity.
+   SIZE_MAX = unavailable. out=NULL/capacity=0 is a size probe. */
 typedef struct { int32_t pid; uint64_t gpu_time_ns; } bmtop_gpu_time_raw;
 size_t bmtop_read_gpu_process_times(bmtop_gpu_time_raw *out, size_t capacity);
+
+int bmtop_read_gpu_model(char *out, size_t capacity);

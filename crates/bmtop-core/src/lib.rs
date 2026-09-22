@@ -1,9 +1,12 @@
 //! Platform-independent models and invariants for bmtop.
 
+pub mod diagnostics;
 mod energy;
 mod extras;
 mod i18n;
+pub mod privacy;
 mod soc;
+pub use privacy::PrivacyMode;
 
 pub use energy::{EnergyCoefficients, ProcessEnergyCounters, ProcessEnergyHistory, QOS_BUCKETS};
 pub use extras::{
@@ -369,6 +372,16 @@ impl DiskVolume {
     }
 }
 
+/// GPU client collection coverage. Counts are client records, not unique PIDs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GpuProcessCoverage {
+    pub available: bool,
+    pub observed_clients: usize,
+    pub retained_clients: usize,
+    pub capacity: usize,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemSnapshot {
     /// 采样时刻，schema v2 起为 UTC RFC 3339（v1 是 epoch 秒拼 `Z` 的非法格式）。
@@ -382,6 +395,8 @@ pub struct SystemSnapshot {
     pub interfaces: Vec<NetworkInterfaceMetrics>,
     pub gpu: Option<GpuSnapshot>,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_process_coverage: Option<GpuProcessCoverage>,
     /// 开机至今的秒数（`kern.boottime`），读不到时为 `None`。
     #[serde(default)]
     pub uptime_seconds: Option<u64>,

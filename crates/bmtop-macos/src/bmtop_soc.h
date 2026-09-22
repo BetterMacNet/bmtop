@@ -62,3 +62,6 @@ int bmtop_soc_thermal_available(void);
 int bmtop_soc_read_battery(int32_t *percent, int32_t *charging, int32_t *on_ac);
 
 #endif
+
+/* Energy Model / GPU Stats / CPU Stats / Energy Counters / AMC Stats bits 0..4. */
+uint32_t bmtop_soc_available_groups(void);

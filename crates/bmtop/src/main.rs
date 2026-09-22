@@ -1,19 +1,21 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bmtop_core::{
-    AppMode, CapabilityState, JsonEnvelope, Language, RefreshInterval, SystemSnapshot,
+    AppMode, CapabilityState, JsonEnvelope, Language, PrivacyMode, RefreshInterval, SystemSnapshot,
     SCHEMA_VERSION,
 };
 use bmtop_macos::{
-    disk_report, hardware_report, network_connections, sample_powermetrics,
-    send_signal_if_identity, sensor_report, uptime_seconds, CollectorConfig, CollectorError,
-    MacCollector, ProcessSignal,
+    disk_report, hardware_report_with_privacy, network_connections, sample_powermetrics,
+    send_signal_if_identity, sensor_report_with_privacy, uptime_seconds, CollectorConfig,
+    CollectorError, MacCollector, ProcessSignal,
 };
 use bmtop_tui::{
-    keyboard_enhancement_supported, run_with_details as run_tui_with_details, ModeDetail,
+    keyboard_enhancement_supported, run_with_options as run_tui_with_options, ModeDetail,
     ProcessSignalKind,
 };
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
+mod config;
+mod output;
 mod sections;
 
 use sections::hardware_sections;
@@ -43,16 +45,16 @@ fn usage(message: impl Into<String>) -> anyhow::Error {
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(long, global = true, value_name = "zh|en")]
+    #[arg(long, global = true, env = "BMTOP_LANG", value_name = "zh|en")]
     lang: Option<Language>,
     #[arg(
         short = 'i',
         long,
         global = true,
-        default_value = "1s",
+        env = "BMTOP_INTERVAL",
         value_name = "DURATION"
     )]
-    interval: String,
+    interval: Option<String>,
     #[arg(long, global = true, default_value_t = OutputFormat::Table)]
     format: OutputFormat,
     #[arg(long, global = true)]
@@ -61,8 +63,27 @@ struct Cli {
     count: Option<u32>,
     #[arg(long, global = true)]
     enhanced: bool,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "privacy")]
     show_sensitive: bool,
+    #[arg(
+        long,
+        global = true,
+        env = "BMTOP_PRIVACY",
+        value_name = "strict|default|off"
+    )]
+    privacy: Option<PrivacyMode>,
+    #[arg(long, global = true, value_name = "PATH", conflicts_with = "no_config")]
+    config: Option<std::path::PathBuf>,
+    #[arg(long, global = true)]
+    no_config: bool,
+    #[arg(long, global = true)]
+    print_config: bool,
+    #[arg(long, global = true)]
+    schema_version: bool,
+    #[arg(long, global = true)]
+    quick: bool,
+    #[arg(long, global = true, value_name = "PATH")]
+    diagnostics_file: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,7 +97,7 @@ enum Command {
         pid: Option<i32>,
         #[arg(long)]
         user: Option<String>,
-        #[arg(long, default_value = "cpu")]
+        #[arg(long, default_value = "cpu", value_parser = ["cpu", "gpu", "memory", "mem", "pid", "energy", "nrg", "power", "watts"])]
         sort: String,
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
@@ -99,7 +120,7 @@ enum Command {
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Table,
     Json,
@@ -147,7 +168,10 @@ fn preferred_language<I: IntoIterator<Item = String>>(arguments: I) -> Language 
             }
         }
     }
-    Language::from_environment()
+    std::env::var("BMTOP_LANG")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(Language::from_environment)
 }
 
 /// 把 i18n 里的帮助文案挂到 clap 上。
@@ -182,6 +206,46 @@ fn localized_help(command: clap::Command, text: &'static bmtop_core::Strings) ->
     ] {
         command = command.mut_subcommand(name, |sub| sub.about(about));
     }
+    let chinese = text.mode_overview == "概览";
+    for (name, zh, en) in [
+        (
+            "privacy",
+            "隐私策略：strict / default / off",
+            "Privacy policy: strict / default / off",
+        ),
+        (
+            "config",
+            "读取指定 TOML 配置",
+            "Read a specific TOML configuration",
+        ),
+        (
+            "no_config",
+            "忽略所有配置文件",
+            "Ignore all configuration files",
+        ),
+        (
+            "print_config",
+            "输出合并后的配置后退出",
+            "Print resolved preferences and exit",
+        ),
+        (
+            "schema_version",
+            "输出机器接口版本后退出",
+            "Print machine schema version and exit",
+        ),
+        (
+            "quick",
+            "单次 CPU/GPU/传感器使用 250ms 采样窗口",
+            "Use a 250ms one-shot CPU/GPU/sensors window",
+        ),
+        (
+            "diagnostics_file",
+            "TUI 退出时写入不含快照的性能诊断文件",
+            "Write timing-only diagnostics when the TUI exits",
+        ),
+    ] {
+        command = command.mut_arg(name, |arg| arg.help(if chinese { zh } else { en }));
+    }
     // 各子命令自己的参数说明。
     command
         .mut_subcommand("top", |sub| {
@@ -209,76 +273,193 @@ fn localized_help(command: clap::Command, text: &'static bmtop_core::Strings) ->
 
 fn execute() -> Result<()> {
     let language = preferred_language(std::env::args().skip(1));
-    let text = language.strings();
-    let command = localized_help(Cli::command(), text);
+    let command = localized_help(Cli::command(), language.strings());
     let cli = Cli::from_arg_matches(&command.get_matches())?;
-    // 参数解析完再取一次：显式 `--lang` 优先，预扫只是为了让帮助文案对上语言。
-    let language = cli.lang.unwrap_or(language);
-    let interval = parse_interval(&cli.interval)?;
-    // powermetrics 只接在 gpu / sensors 上；别的命令带 --enhanced 以前是
-    // 「弹 sudo 密码框然后丢弃输出」的空操作，现在直接拒绝。
+    if cli.schema_version {
+        println!("{SCHEMA_VERSION}");
+        return Ok(());
+    }
+    if let Some(Command::Completion { shell }) = &cli.command {
+        return completion(*shell, cli.lang.unwrap_or(language));
+    }
+    let mut preferences = config::load(cli.config.as_deref(), cli.no_config)
+        .map_err(|error| usage(format!("{error:#}")))?;
+    if let Some(value) = &cli.interval {
+        preferences.interval = value.clone();
+    }
+    if let Some(value) = cli.lang {
+        preferences.language = Some(value.code().into());
+    }
+    if let Some(value) = cli.privacy {
+        preferences.privacy = value;
+    }
+    if cli.show_sensitive {
+        preferences.privacy = PrivacyMode::Off;
+    }
+    if let Some(Command::Top { mode: Some(mode) }) = &cli.command {
+        preferences.default_mode =
+            AppMode::from_number(*mode).ok_or_else(|| usage("mode must be between 1 and 9"))?;
+    }
+    let interval = parse_interval(&preferences.interval)?;
+    let language = preferences.language()?;
+    preferences.language = Some(language.code().into());
+    if cli.print_config {
+        println!("{}", toml::to_string_pretty(&preferences)?);
+        return Ok(());
+    }
     if cli.enhanced && !matches!(cli.command, Some(Command::Gpu) | Some(Command::Sensors)) {
         return Err(usage(
             "--enhanced only applies to `bmtop gpu` and `bmtop sensors`",
         ));
     }
+    if cli.enhanced && cli.format == OutputFormat::Csv {
+        return Err(usage("enhanced output requires table, JSON or JSONL"));
+    }
+    let samples = sample_count(cli.watch, cli.count)?;
+    if cli.quick
+        && (!matches!(
+            cli.command,
+            Some(Command::Cpu | Command::Gpu | Command::Sensors)
+        ) || samples != 1
+            || cli.watch)
+    {
+        return Err(usage("--quick requires a one-shot cpu/gpu/sensors command"));
+    }
+    let is_top = matches!(cli.command, None | Some(Command::Top { .. }));
+    if is_top && (cli.format != OutputFormat::Table || cli.watch || cli.count.is_some()) {
+        return Err(usage(
+            "interactive top does not accept --format/--watch/--count",
+        ));
+    }
+    if !is_top && cli.diagnostics_file.is_some() {
+        return Err(usage(
+            "--diagnostics-file currently applies only to interactive top",
+        ));
+    }
+    if matches!(cli.command, Some(Command::Doctor)) && (cli.watch || cli.count.is_some()) {
+        return Err(usage(
+            "doctor is a one-shot diagnostic; --watch/--count are unsupported",
+        ));
+    }
+    if cli.format == OutputFormat::Json && samples > 1 {
+        return Err(usage(
+            "--watch/--count requires --format jsonl, csv or table",
+        ));
+    }
+    if cli.format == OutputFormat::Csv
+        && matches!(
+            cli.command,
+            Some(Command::Hardware { .. } | Command::Sensors | Command::Doctor)
+        )
+    {
+        return Err(usage(
+            "CSV is not supported for hardware, sensors or doctor; use JSON/JSONL",
+        ));
+    }
+    if preferences.privacy == PrivacyMode::Off && io::stderr().is_terminal() {
+        eprintln!(
+            "{}",
+            if language == Language::Chinese {
+                "警告：隐私过滤已关闭，输出可能包含序列号、标识符和命令行密钥。"
+            } else {
+                "Warning: privacy filtering is OFF; output may contain identifiers and command-line secrets."
+            }
+        );
+    }
     match cli.command {
-        Some(Command::Completion { shell }) => completion(shell, language),
-        Some(Command::Hardware { category }) => run_hardware(
-            category.as_deref(),
-            cli.show_sensitive,
-            cli.format,
-            language,
-        ),
+        Some(Command::Hardware { category }) => {
+            for round in 0..samples {
+                if round > 0 {
+                    std::thread::sleep(Duration::from_millis(interval.as_millis()));
+                }
+                run_hardware(
+                    category.as_deref(),
+                    preferences.privacy,
+                    cli.format,
+                    language,
+                )?;
+            }
+            Ok(())
+        }
         Some(Command::Doctor) => run_doctor(cli.format, language),
-        Some(Command::Top { mode }) => run_top(interval, mode, language),
-        Some(command) => run_metric(
-            command,
-            interval,
-            cli.format,
-            cli.watch,
-            cli.count,
-            cli.show_sensitive,
-            cli.enhanced,
-        ),
-        None => {
-            if !io::stdout().is_terminal() {
+        Some(Command::Top { .. }) | None => {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                 return Err(usage(
                     "interactive mode requires a TTY; use `bmtop ps --format json` for pipelines",
                 ));
             }
-            run_top(interval, None, language)
+            if cfg!(not(target_os = "macos")) {
+                return Err(CollectorError::UnsupportedPlatform.into());
+            }
+            let diagnostic = cli
+                .diagnostics_file
+                .as_deref()
+                .map(config::create_private)
+                .transpose()?;
+            run_top(interval, &preferences, diagnostic)
         }
+        Some(command) => run_metric(
+            command,
+            MetricOptions {
+                interval,
+                format: cli.format,
+                samples,
+                privacy: preferences.privacy,
+                enhanced: cli.enhanced,
+                quick: cli.quick,
+                language,
+            },
+        ),
     }
 }
 
-fn run_top(interval: RefreshInterval, mode: Option<u8>, language: Language) -> Result<()> {
-    let initial = match mode {
-        Some(number) => {
-            AppMode::from_number(number).ok_or_else(|| usage("mode must be between 1 and 9"))?
-        }
-        None => AppMode::Overview,
-    };
-    let mut collector = MacCollector::new(CollectorConfig::default());
-    run_tui_with_details(
+fn sample_count(watch: bool, count: Option<u32>) -> Result<u32> {
+    match count {
+        Some(0) => Err(usage("--count must be at least 1")),
+        Some(count) => Ok(count),
+        None if watch => Ok(u32::MAX),
+        None => Ok(1),
+    }
+}
+
+fn run_top(
+    interval: RefreshInterval,
+    preferences: &config::Config,
+    diagnostic: Option<std::fs::File>,
+) -> Result<()> {
+    let initial = preferences.default_mode;
+    let language = preferences.language()?;
+    let privacy = preferences.privacy;
+    let options = preferences.tui_options()?;
+    let mut collector = MacCollector::new(CollectorConfig {
+        show_sensitive: privacy == PrivacyMode::Off,
+        ..CollectorConfig::default()
+    });
+    let report = run_tui_with_options(
         interval,
         initial,
         language,
+        options,
         move |detail_pid, fps_enabled| {
             collector.set_fps_enabled(fps_enabled);
-            collector
+            let mut snapshot = collector
                 .snapshot(detail_pid)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            privacy.redact_snapshot(&mut snapshot);
+            Ok(snapshot)
         },
         move |mode| match mode {
             // 概览页只用根卷，但拉取成本和全量一样，就复用同一份结果。
             AppMode::Overview | AppMode::Disk => disk_report()
-                .map(ModeDetail::Disks)
+                .map(|mut disks| {
+                    privacy.redact_disks(&mut disks);
+                    ModeDetail::Disks(disks)
+                })
                 .map_err(|error| error.to_string()),
-            AppMode::Hardware => hardware_report(false)
+            AppMode::Hardware => hardware_report_with_privacy(privacy)
                 .map(|report| {
                     let mut sections = hardware_sections(&report.sections, language);
-                    sections.extend(transport_sections(language));
+                    sections.extend(transport_sections(language, privacy));
                     ModeDetail::Sections(sections)
                 })
                 .map_err(|error| error.to_string()),
@@ -300,85 +481,111 @@ fn run_top(interval: RefreshInterval, mode: Option<u8>, language: Language) -> R
                 })
                 .map_err(|error| error.to_string())
         },
-    )
-    .context("TUI exited unexpectedly")
+    )?;
+    if let Some(file) = diagnostic {
+        config::write_diagnostics(file, &report)?;
+    }
+    Ok(())
 }
 
-fn run_metric(
-    command: Command,
+struct MetricOptions {
     interval: RefreshInterval,
     format: OutputFormat,
-    watch: bool,
-    count: Option<u32>,
-    show_sensitive: bool,
+    samples: u32,
+    privacy: PrivacyMode,
     enhanced: bool,
-) -> Result<()> {
+    quick: bool,
+    language: Language,
+}
+
+fn run_metric(command: Command, options: MetricOptions) -> Result<()> {
+    let MetricOptions {
+        interval,
+        format,
+        samples,
+        privacy,
+        enhanced,
+        quick,
+        language,
+    } = options;
     let kind = match &command {
         Command::Ps { .. } => "processes",
         Command::Cpu => "cpu",
         Command::Memory => "memory",
-        Command::Network { .. } => "network",
+        Command::Network { connections: true } => "network_connections",
+        Command::Network { connections: false } => "network",
         Command::Disk => "disk",
         Command::Gpu => "gpu",
         Command::Sensors => "sensors",
         _ => unreachable!(),
     };
-    // --count 隐含循环语义；--watch 无 count 则一直采到 Ctrl-C。
-    let samples = match count {
-        Some(0) => return Err(usage("--count must be at least 1")),
-        Some(value) => value,
-        None if watch => u32::MAX,
-        None => 1,
+    let window = if quick {
+        Duration::from_millis(250)
+    } else {
+        soc_window(interval)
     };
-    if matches!(format, OutputFormat::Json) && samples > 1 {
-        return Err(usage("--watch/--count requires --format jsonl or table"));
-    }
-    if matches!(format, OutputFormat::Csv)
-        && !matches!(command, Command::Ps { .. } | Command::Network { .. })
-    {
-        return Err(usage("CSV is supported only for ps and network"));
-    }
-    if matches!(command, Command::Disk | Command::Sensors) {
+    if matches!(
+        command,
+        Command::Disk | Command::Sensors | Command::Network { connections: true }
+    ) {
         for round in 0..samples {
             if round > 0 {
                 std::thread::sleep(Duration::from_millis(interval.as_millis()));
             }
-            let data = if matches!(command, Command::Disk) {
-                serde_json::to_value(disk_report().map_err(anyhow::Error::new)?)?
-            } else {
-                let sensors = sensor_report(show_sensitive).map_err(anyhow::Error::new)?;
-                let soc = bmtop_macos::soc::sample_soc_once(soc_window(interval));
-                if enhanced {
-                    let power = sample_powermetrics(interval).map_err(anyhow::Error::new)?;
-                    json!({ "sensors": sensors, "soc": soc, "powermetrics": power })
-                } else {
-                    json!({ "sensors": sensors, "soc": soc })
+            let data = match command {
+                Command::Disk => {
+                    let mut disks = disk_report().map_err(anyhow::Error::new)?;
+                    privacy.redact_disks(&mut disks);
+                    serde_json::to_value(disks)?
+                }
+                Command::Sensors => {
+                    let sensors =
+                        sensor_report_with_privacy(privacy).map_err(anyhow::Error::new)?;
+                    let soc = bmtop_macos::soc::sample_soc_once(window);
+                    if enhanced {
+                        let power = sample_powermetrics(interval).map_err(anyhow::Error::new)?;
+                        json!({ "sensors": sensors, "soc": soc, "powermetrics": power })
+                    } else {
+                        json!({ "sensors": sensors, "soc": soc })
+                    }
+                }
+                _ => {
+                    let mut rows = network_connections().map_err(anyhow::Error::new)?;
+                    if privacy == PrivacyMode::Strict {
+                        for row in &mut rows {
+                            row.command = None;
+                            row.endpoint = None;
+                        }
+                    }
+                    json!({ "connections": rows })
                 }
             };
-            print_report(kind, data, format)?;
+            if format == OutputFormat::Csv {
+                print!("{}", output::report_csv(kind, &data, round == 0)?);
+            } else {
+                print_report(kind, data, format)?;
+            }
         }
         return Ok(());
     }
-    if let Command::Network { connections: true } = command {
-        let rows = network_connections().map_err(anyhow::Error::new)?;
-        return print_report(
-            "network_connections",
-            json!({ "connections": rows }),
-            format,
-        );
-    }
     let mut collector = MacCollector::new(CollectorConfig {
-        show_sensitive,
+        show_sensitive: privacy == PrivacyMode::Off,
         ..CollectorConfig::default()
     });
-    // `ps --pid X` 是唯一的单进程视角，为它补齐详情字段（fd / I/O / argv）。
     let detail_pid = match &command {
         Command::Ps { pid, .. } => *pid,
         _ => None,
     };
     if samples == 1 && matches!(kind, "cpu" | "gpu") {
-        let _ = collector.snapshot(detail_pid);
-        std::thread::sleep(soc_window(interval));
+        collector.snapshot(detail_pid).map_err(anyhow::Error::new)?;
+        if io::stderr().is_terminal() {
+            if language == Language::Chinese {
+                eprintln!("正在采样 {}ms 差分窗口…", window.as_millis());
+            } else {
+                eprintln!("Sampling a {}ms delta window…", window.as_millis());
+            }
+        }
+        std::thread::sleep(window);
     }
     for round in 0..samples {
         if round > 0 {
@@ -399,22 +606,19 @@ fn run_metric(
             } => filter_processes(snapshot, *pid, user.as_deref(), sort, *limit),
             _ => snapshot,
         };
-        // 完整命令行可能含 token / 密钥，JSON/CSV 输出默认脱敏。
-        if !show_sensitive {
-            for process in &mut filtered.processes {
-                process.arguments = None;
-            }
-        }
+        privacy.redact_snapshot(&mut filtered);
         if kind == "gpu" && enhanced {
             let power = sample_powermetrics(interval).map_err(anyhow::Error::new)?;
-            let data = json!({
-                "captured_at": filtered.captured_at,
-                "gpu": filtered.gpu,
-                "powermetrics": power,
-            });
+            let data = json!({ "captured_at": filtered.captured_at, "gpu": filtered.gpu,
+                "process_coverage": filtered.gpu_process_coverage, "powermetrics": power });
+            if format == OutputFormat::Csv {
+                return Err(usage(
+                    "GPU CSV cannot represent enhanced power data; use JSON/JSONL",
+                ));
+            }
             print_report(kind, data, format)?;
         } else {
-            print_snapshot(kind, &filtered, format)?;
+            print_snapshot(kind, &filtered, format, round == 0)?;
         }
     }
     Ok(())
@@ -495,6 +699,12 @@ fn filter_processes(
             .processes
             .sort_by_key(|process| std::cmp::Reverse(process.resident_bytes.unwrap_or_default())),
         "pid" => snapshot.processes.sort_by_key(|process| process.pid),
+        "gpu" => snapshot.processes.sort_by(|left, right| {
+            right
+                .gpu_percent
+                .partial_cmp(&left.gpu_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
         "energy" | "nrg" => snapshot.processes.sort_by(|left, right| {
             right
                 .energy_impact
@@ -522,12 +732,17 @@ fn filter_processes(
     snapshot
 }
 
-fn print_snapshot(kind: &str, snapshot: &SystemSnapshot, format: OutputFormat) -> Result<()> {
+fn print_snapshot(
+    kind: &str,
+    snapshot: &SystemSnapshot,
+    format: OutputFormat,
+    header: bool,
+) -> Result<()> {
     match format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             let data = match kind {
                 "processes" => {
-                    json!({"captured_at": snapshot.captured_at, "processes": snapshot.processes})
+                    json!({"captured_at": snapshot.captured_at, "processes": snapshot.processes, "gpu_process_coverage": snapshot.gpu_process_coverage})
                 }
                 "cpu" => json!({
                     "captured_at": snapshot.captured_at,
@@ -551,6 +766,7 @@ fn print_snapshot(kind: &str, snapshot: &SystemSnapshot, format: OutputFormat) -
                 "gpu" => json!({
                     "captured_at": snapshot.captured_at,
                     "gpu": snapshot.gpu,
+                    "process_coverage": snapshot.gpu_process_coverage,
                     "soc": snapshot.soc.as_ref().map(|soc| json!({
                         "gpu_freq_mhz": soc.gpu_freq_mhz,
                         "gpu_watts": soc.power.gpu_watts,
@@ -572,7 +788,7 @@ fn print_snapshot(kind: &str, snapshot: &SystemSnapshot, format: OutputFormat) -
                 println!("{}", serde_json::to_string(&envelope)?);
             }
         }
-        OutputFormat::Csv => print_csv(kind, snapshot),
+        OutputFormat::Csv => print!("{}", output::snapshot_csv(kind, snapshot, header)?),
         OutputFormat::Table => print_table(kind, snapshot),
     }
     io::stdout().flush().ok();
@@ -643,52 +859,13 @@ fn print_table(kind: &str, snapshot: &SystemSnapshot) {
     }
 }
 
-fn print_csv(kind: &str, snapshot: &SystemSnapshot) {
-    match kind {
-        "processes" => {
-            println!("pid,cpu_percent,resident_bytes,threads,user,name");
-            for p in &snapshot.processes {
-                println!(
-                    "{},{},{},{},{},{}",
-                    p.pid,
-                    p.cpu_percent.map(|v| v.to_string()).unwrap_or_default(),
-                    p.resident_bytes.unwrap_or_default(),
-                    p.thread_count.map(|v| v.to_string()).unwrap_or_default(),
-                    csv(&p.user),
-                    csv(&p.name)
-                );
-            }
-        }
-        "network" => {
-            println!(
-                "name,received_bytes,sent_bytes,receive_bytes_per_second,send_bytes_per_second"
-            );
-            for i in &snapshot.interfaces {
-                println!(
-                    "{},{},{},{},{}",
-                    csv(&i.name),
-                    i.received_bytes,
-                    i.sent_bytes,
-                    i.receive_bytes_per_second
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
-                    i.send_bytes_per_second
-                        .map(|v| v.to_string())
-                        .unwrap_or_default()
-                );
-            }
-        }
-        _ => {}
-    }
-}
-
 fn run_hardware(
     category: Option<&str>,
-    show_sensitive: bool,
+    privacy: PrivacyMode,
     format: OutputFormat,
     language: Language,
 ) -> Result<()> {
-    let report = hardware_report(show_sensitive).map_err(anyhow::Error::new)?;
+    let report = hardware_report_with_privacy(privacy).map_err(anyhow::Error::new)?;
     let data = if let Some(category) = category {
         report
             .sections
@@ -726,7 +903,12 @@ fn run_hardware(
 }
 
 /// 硬件页的雷雳 + RDMA 分区（切进硬件页时随分区列表一次性拉取）。
-fn transport_sections(language: Language) -> Vec<bmtop_tui::DetailSection> {
+fn transport_sections(language: Language, privacy: PrivacyMode) -> Vec<bmtop_tui::DetailSection> {
+    // Device/peer labels can contain personal names. A strict session omits
+    // these sections rather than pretending unstructured text is anonymized.
+    if privacy == PrivacyMode::Strict {
+        return Vec::new();
+    }
     let strings = language.strings();
     let switches = bmtop_macos::thunderbolt::read_tb_switches();
     let buses = bmtop_macos::thunderbolt::build_tb_buses(&switches);
@@ -765,12 +947,35 @@ fn soc_window(interval: RefreshInterval) -> Duration {
 }
 
 fn soc_probe_json() -> serde_json::Value {
-    let probe = bmtop_macos::soc::SocCollector::new().map(|collector| collector.probe());
-    json!({
-        "ioreport": probe.is_some(),
-        "smc": probe.is_some_and(|probe| probe.smc),
-        "thermal": probe.is_some_and(|probe| probe.thermal),
-    })
+    match bmtop_macos::soc::SocCollector::try_new() {
+        Ok(collector) => {
+            let probe = collector.probe();
+            let groups = [
+                "Energy Model",
+                "GPU Stats",
+                "CPU Stats",
+                "Energy Counters",
+                "AMC Stats",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(bit, name)| {
+                json!({
+                    "name": name, "enumerated": probe.enumerated_groups & (1 << bit) != 0,
+                })
+            })
+            .collect::<Vec<_>>();
+            json!({ "ioreport": probe.ioreport, "smc": probe.smc, "thermal": probe.thermal,
+                "initialization": { "state": "available", "reason_code": null },
+                "groups": groups,
+                "bandwidth": { "state": if probe.enumerated_groups & 16 != 0 { "not_sampled" } else { "unavailable" },
+                    "reason_code": if probe.enumerated_groups & 16 != 0 { "delta_sample_required" } else { "amc_group_not_enumerated" },
+                    "note": "Group enumeration is not proof that every counter is available; missing metrics remain null." } })
+        }
+        Err(error) => json!({ "ioreport": false, "smc": false, "thermal": false,
+            "initialization": { "state": "unavailable", "reason_code": error.to_string() },
+            "groups": [], "bandwidth": { "state": "unavailable", "reason_code": "soc_not_initialized" } }),
+    }
 }
 
 fn extras_probe_json() -> serde_json::Value {
@@ -786,19 +991,44 @@ fn extras_probe_json() -> serde_json::Value {
 }
 
 fn run_doctor(format: OutputFormat, language: Language) -> Result<()> {
-    let value = json!({ "schema_version": SCHEMA_VERSION, "platform": std::env::consts::OS, "arch": std::env::consts::ARCH, "term": std::env::var("TERM").unwrap_or_default(), "tty": io::stdout().is_terminal(), "uptime_seconds": uptime_seconds(), "soc": soc_probe_json(), "extras": extras_probe_json(), "commands": { "system_profiler": std::path::Path::new("/usr/sbin/system_profiler").exists(), "powermetrics": std::path::Path::new("/usr/bin/powermetrics").exists(), "lsof": std::path::Path::new("/usr/sbin/lsof").exists() }, "keyboard": { "base_keys": true, "command_digit": keyboard_enhancement_supported(), "note": language.strings().cli_keyboard_note } });
+    let term = std::env::var("TERM").unwrap_or_default();
+    let term = match term.as_str() {
+        "xterm-256color" | "xterm" | "screen" | "screen-256color" | "tmux-256color" | "vt100"
+        | "dumb" => term.as_str(),
+        "" => "unset",
+        _ => "other",
+    };
+    let value = json!({
+        "schema_version": SCHEMA_VERSION, "kind": "doctor", "version": env!("CARGO_PKG_VERSION"),
+        "captured_at": bmtop_core::rfc3339_now(), "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH, "term": term, "tty": io::stdout().is_terminal(),
+        "uptime_seconds": uptime_seconds(), "soc": soc_probe_json(), "extras": extras_probe_json(),
+        "commands": {
+            "system_profiler": std::path::Path::new("/usr/sbin/system_profiler").is_file(),
+            "powermetrics": std::path::Path::new("/usr/bin/powermetrics").is_file(),
+            "lsof": std::path::Path::new("/usr/sbin/lsof").is_file(),
+        },
+        "keyboard": { "base_keys": true, "command_digit": keyboard_enhancement_supported(),
+            "note": language.strings().cli_keyboard_note },
+        "privacy": { "hardware_identifiers_collected": false, "process_arguments_collected": false,
+            "screen_recording_requested": false },
+    });
     match format {
-        OutputFormat::Json | OutputFormat::Jsonl => {
-            println!("{}", serde_json::to_string_pretty(&value)?)
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&value)?),
+        OutputFormat::Jsonl => println!("{}", serde_json::to_string(&value)?),
+        OutputFormat::Table => {
+            println!(
+                "platform={} arch={} tty={} system_profiler={} powermetrics={}",
+                value["platform"],
+                value["arch"],
+                value["tty"],
+                value["commands"]["system_profiler"],
+                value["commands"]["powermetrics"]
+            );
+            println!("SoC: {}", value["soc"]["initialization"]);
+            println!("Bandwidth: {}", value["soc"]["bandwidth"]);
         }
-        OutputFormat::Table | OutputFormat::Csv => println!(
-            "platform={} arch={} tty={} system_profiler={} powermetrics={}",
-            value["platform"],
-            value["arch"],
-            value["tty"],
-            value["commands"]["system_profiler"],
-            value["commands"]["powermetrics"]
-        ),
+        OutputFormat::Csv => return Err(usage("CSV is not supported for doctor")),
     }
     Ok(())
 }
@@ -841,6 +1071,7 @@ fn exit_code(error: &anyhow::Error) -> i32 {
     if let Some(collector) = error.downcast_ref::<CollectorError>() {
         return match collector {
             CollectorError::AuthorizationDenied => 77,
+            CollectorError::UnsupportedPlatform => 69,
             _ => 70,
         };
     }
@@ -869,9 +1100,6 @@ fn bytes(value: u64) -> String {
     } else {
         format!("{number:.1}{}", UNITS[index])
     }
-}
-fn csv(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 fn signal_name(signal: ProcessSignal) -> &'static str {
     match signal {
@@ -921,6 +1149,7 @@ mod tests {
             interfaces: Vec::new(),
             gpu: None,
             capabilities: vec!["processes".into()],
+            gpu_process_coverage: None,
             uptime_seconds: None,
             soc: None,
             topology: None,

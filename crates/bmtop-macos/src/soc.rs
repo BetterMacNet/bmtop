@@ -1,8 +1,8 @@
 //! Apple Silicon SoC 采集的 Rust 包装（C 实现见 `bmtop_soc.c`）。
 //!
 //! C 层持有静态状态（IOReport 订阅、上次采样），**非线程安全**：
-//! 进程内只允许一个 [`SocCollector`]，且只在创建它的线程上使用
-//! （TUI 的 worker 线程 / CLI 的主线程都满足）。
+//! 原子租约保证进程内只有一个 [`SocCollector`]；Cell 标记禁止共享引用跨线程。
+//! 所有采样必须串行；TUI 仅在采样线程初始化、使用和释放该句柄。
 
 use bmtop_core::{
     sensor_group_for_key, BatteryInfo, ClusterMetrics, CpuTopology, FanReading, SensorReading,
@@ -82,6 +82,7 @@ struct RawTopology {
 #[cfg(target_os = "macos")]
 extern "C" {
     fn bmtop_soc_init() -> i32;
+    fn bmtop_soc_available_groups() -> u32;
     fn bmtop_soc_sample(out: *mut RawSample) -> i32;
     fn bmtop_soc_cleanup();
     fn bmtop_soc_read_topology(out: *mut RawTopology) -> i32;
@@ -96,18 +97,61 @@ pub struct SocProbe {
     pub ioreport: bool,
     pub smc: bool,
     pub thermal: bool,
+    pub enumerated_groups: u32,
 }
+
+/// Exact initialization stage, not a guess about OS permissions or model support.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum SocInitError {
+    #[error("unsupported_platform")]
+    UnsupportedPlatform,
+    #[error("collector_already_active")]
+    AlreadyActive,
+    #[error("energy_channels_unavailable")]
+    EnergyChannelsUnavailable,
+    #[error("channel_allocation_failed")]
+    ChannelAllocationFailed,
+    #[error("subscription_failed")]
+    SubscriptionFailed,
+    #[error("initialization_failed")]
+    InitializationFailed,
+}
+
+#[cfg(target_os = "macos")]
+static SOC_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// IOReport/SMC 采集句柄。`new()` 失败（Intel、系统不支持）即永久 `None`。
 pub struct SocCollector {
-    _private: (),
+    _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
 #[cfg(target_os = "macos")]
 impl SocCollector {
     pub fn new() -> Option<Self> {
-        // bmtop_soc_init 幂等，重复调用返回 0。
-        (unsafe { bmtop_soc_init() } == 0).then_some(Self { _private: () })
+        Self::try_new().ok()
+    }
+
+    pub fn try_new() -> Result<Self, SocInitError> {
+        use std::sync::atomic::Ordering;
+        if SOC_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(SocInitError::AlreadyActive);
+        }
+        let code = unsafe { bmtop_soc_init() };
+        if code == 0 {
+            return Ok(Self {
+                _not_sync: std::marker::PhantomData,
+            });
+        }
+        SOC_ACTIVE.store(false, Ordering::Release);
+        Err(match code {
+            -1 => SocInitError::EnergyChannelsUnavailable,
+            -2 => SocInitError::ChannelAllocationFailed,
+            -3 => SocInitError::SubscriptionFailed,
+            _ => SocInitError::InitializationFailed,
+        })
     }
 
     /// 采一次样。首次调用只做预热（返回 `None`），之后每次给出与上次
@@ -122,6 +166,7 @@ impl SocCollector {
             ioreport: true,
             smc: unsafe { bmtop_soc_smc_available() } != 0,
             thermal: unsafe { bmtop_soc_thermal_available() } != 0,
+            enumerated_groups: unsafe { bmtop_soc_available_groups() },
         }
     }
 }
@@ -130,6 +175,7 @@ impl SocCollector {
 impl Drop for SocCollector {
     fn drop(&mut self) {
         unsafe { bmtop_soc_cleanup() };
+        SOC_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -162,11 +208,11 @@ fn c_str_field(bytes: &[u8]) -> String {
 
 /// 哨兵约定：功耗 <0 不可用；温度 <=0 不可用；thermal_level <0 不可用。
 fn watts_field(value: f64) -> Option<f64> {
-    (value >= 0.0).then_some(value)
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
 fn temp_field(value: f64) -> Option<f64> {
-    (value > 0.0).then_some(value)
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 /// 累计字节 → GB/s（十进制）。负数哨兵或窗口为零时 `None`。
@@ -178,6 +224,7 @@ fn convert_sample(raw: &RawSample) -> SocMetrics {
     let cluster_count = raw.cluster_count.clamp(0, MAX_CLUSTERS as i32) as usize;
     let clusters = raw.clusters[..cluster_count]
         .iter()
+        .filter(|cluster| cluster.active_percent.is_finite() && cluster.freq_mhz.is_finite())
         .map(|cluster| ClusterMetrics {
             name: c_str_field(&cluster.name),
             active_percent: cluster.active_percent.clamp(0.0, 100.0),
@@ -199,6 +246,7 @@ fn convert_sample(raw: &RawSample) -> SocMetrics {
     let temp_count = raw.temp_count.clamp(0, MAX_TEMPS as i32) as usize;
     let sensors = raw.temps[..temp_count]
         .iter()
+        .filter(|temp| temp.celsius.is_finite() && temp.celsius > 0.0)
         .map(|temp| {
             let key = c_str_field(&temp.key);
             SensorReading {
@@ -224,7 +272,7 @@ fn convert_sample(raw: &RawSample) -> SocMetrics {
         },
         gpu_freq_mhz: watts_field(raw.gpu_freq_mhz).filter(|&freq| freq > 0.0),
         gpu_active_percent: watts_field(raw.gpu_active_percent).map(|pct| pct.clamp(0.0, 100.0)),
-        thermal_level: (raw.thermal_level >= 0).then_some(raw.thermal_level as u8),
+        thermal_level: u8::try_from(raw.thermal_level).ok(),
         fans,
         sensors,
         dram_read_gbs: bandwidth_gbs(raw.dram_read_bytes, raw.elapsed_ns),
@@ -256,6 +304,34 @@ pub fn read_battery() -> Option<BatteryInfo> {
         charging: charging != 0,
         on_ac: on_ac != 0,
     })
+}
+
+#[cfg(not(target_os = "macos"))]
+impl SocCollector {
+    pub fn new() -> Option<Self> {
+        None
+    }
+    pub fn try_new() -> Result<Self, SocInitError> {
+        Err(SocInitError::UnsupportedPlatform)
+    }
+    pub fn sample(&mut self) -> Option<SocMetrics> {
+        None
+    }
+    pub fn probe(&self) -> SocProbe {
+        SocProbe::default()
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub fn read_topology() -> Option<CpuTopology> {
+    None
+}
+#[cfg(not(target_os = "macos"))]
+pub fn sample_soc_once(_window: std::time::Duration) -> Option<SocMetrics> {
+    None
+}
+#[cfg(not(target_os = "macos"))]
+pub fn read_battery() -> Option<BatteryInfo> {
+    None
 }
 
 #[cfg(test)]
@@ -323,6 +399,31 @@ mod tests {
         assert_eq!(metrics.fans[0].name, "Fan 0");
         assert_eq!(metrics.sensors[0].key, "Tp01");
         assert_eq!(metrics.sensors[0].group, "cpu_p");
+    }
+
+    #[test]
+    fn invalid_native_numbers_do_not_become_valid_measurements() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(watts_field(value), None);
+            assert_eq!(temp_field(value), None);
+        }
+        let mut raw = raw_with_sentinels();
+        raw.cpu_watts = f64::INFINITY;
+        raw.thermal_level = 999;
+        raw.temp_count = 1;
+        raw.temps[0].celsius = f32::NAN;
+        let metrics = convert_sample(&raw);
+        assert_eq!(metrics.power.cpu_watts, None);
+        assert_eq!(metrics.thermal_level, None);
+        assert!(metrics.sensors.is_empty());
+    }
+
+    #[test]
+    fn missing_bandwidth_is_not_reported_as_zero() {
+        assert_eq!(bandwidth_gbs(-1, 1_000_000_000), None);
+        assert_eq!(bandwidth_gbs(0, 0), None);
+        assert_eq!(bandwidth_gbs(0, 1_000_000_000), Some(0.0));
+        assert_eq!(bandwidth_gbs(1_000_000_000, 1_000_000_000), Some(1.0));
     }
 
     #[test]

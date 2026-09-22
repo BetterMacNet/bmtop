@@ -3,21 +3,25 @@
 mod overview;
 mod pages;
 mod render;
+mod scheduling;
 mod state;
 mod widgets;
+mod worker;
 
 pub use render::render;
 pub use state::{DetailSection, InputMode, ModeDetail, ProcessSignalKind, SortKey, UiState};
 
 use anyhow::Result;
+use bmtop_core::diagnostics::{RuntimeReport, RuntimeStats};
 use bmtop_core::{AppMode, Language, RefreshInterval, SystemSnapshot};
 use crossterm::event::{
     self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
+use scheduling::{poll_timeout, RedrawGate};
 use std::io::IsTerminal;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use worker::{DetailRevision, Response, SampleRequest, Workers};
 
 /// 终端是否支持增强键盘协议。⌘1…⌘9 依赖它把 SUPER 修饰键上报给应用；
 /// 默认 macOS Terminal 不支持，kitty / WezTerm / Ghostty 等支持。
@@ -53,66 +57,87 @@ fn pop_keyboard_enhancement() {
     let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
 }
 
-/// 发给采样线程的请求。`detail_pid` 是当前选中的进程，
-/// 采集端只为它补齐 fd 数 / 磁盘 I/O / 完整命令行。
-enum WorkerRequest {
-    Sample {
-        detail_pid: Option<i32>,
-        fps_enabled: bool,
-    },
-    Detail(AppMode),
+/// Persistent preferences are applied only at startup. Interactive changes are
+/// session state and are never silently written to the user's configuration.
+#[derive(Debug, Clone)]
+pub struct TuiOptions {
+    pub sort_key: SortKey,
+    pub tree_view: bool,
+    pub hide_idle: bool,
+    pub show_full_path: bool,
 }
 
-enum WorkerResponse {
-    // Box 掉大快照，别让每个 channel 消息都按最大变体分配。
-    Sample(std::result::Result<Box<SystemSnapshot>, String>),
-    Detail(std::result::Result<ModeDetail, String>),
+impl Default for TuiOptions {
+    fn default() -> Self {
+        Self {
+            sort_key: SortKey::Cpu,
+            tree_view: false,
+            hide_idle: false,
+            show_full_path: false,
+        }
+    }
 }
 
-/// 采样与按模式详情都移到一个 worker 线程执行，主循环只收结果。
-/// `system_profiler` / `lsof` 这类慢子进程从此不会冻结界面。
 pub fn run_with_details<F, A, D>(
     interval: RefreshInterval,
     initial_mode: AppMode,
     language: Language,
-    mut sample: F,
-    mut details: D,
-    mut action: A,
+    sample: F,
+    details: D,
+    action: A,
 ) -> Result<()>
 where
     F: FnMut(Option<i32>, bool) -> std::result::Result<SystemSnapshot, String> + Send + 'static,
     A: FnMut(ProcessSignalKind, i32, u64, u64) -> std::result::Result<String, String>,
     D: FnMut(AppMode) -> std::result::Result<ModeDetail, String> + Send + 'static,
 {
-    let (request_sender, request_receiver) = mpsc::channel::<WorkerRequest>();
-    let (response_sender, response_receiver) = mpsc::channel::<WorkerResponse>();
-    // 不 join：退出时 request_sender 一断开，worker 自然走完退出；
-    // 若它正卡在慢子进程上，也不该拖住终端恢复。
-    std::thread::spawn(move || {
-        for request in request_receiver {
-            let response = match request {
-                WorkerRequest::Sample {
-                    detail_pid,
-                    fps_enabled,
-                } => WorkerResponse::Sample(sample(detail_pid, fps_enabled).map(Box::new)),
-                WorkerRequest::Detail(mode) => WorkerResponse::Detail(details(mode)),
-            };
-            if response_sender.send(response).is_err() {
-                break;
-            }
-        }
-    });
+    run_with_options(
+        interval,
+        initial_mode,
+        language,
+        TuiOptions::default(),
+        sample,
+        details,
+        action,
+    )
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_options<F, A, D>(
+    interval: RefreshInterval,
+    initial_mode: AppMode,
+    language: Language,
+    options: TuiOptions,
+    sample: F,
+    details: D,
+    mut action: A,
+) -> Result<RuntimeReport>
+where
+    F: FnMut(Option<i32>, bool) -> std::result::Result<SystemSnapshot, String> + Send + 'static,
+    A: FnMut(ProcessSignalKind, i32, u64, u64) -> std::result::Result<String, String>,
+    D: FnMut(AppMode) -> std::result::Result<ModeDetail, String> + Send + 'static,
+{
+    // No native probing / authorization before verifying the terminal contract.
+    anyhow::ensure!(
+        std::io::stdout().is_terminal() && std::io::stdin().is_terminal(),
+        "interactive mode requires a TTY on stdin and stdout"
+    );
+    let workers = Workers::spawn(sample, details)?;
     let mut terminal = ratatui::init();
     let keyboard_enhanced = push_keyboard_enhancement();
     let mut state = UiState::with_mode(initial_mode);
     state.interval_millis = interval.as_millis();
+    state.sort_key = options.sort_key;
+    state.tree_view = options.tree_view;
+    state.hide_idle = options.hide_idle;
+    state.show_full_path = options.show_full_path;
     state.set_language(language);
     let result = run_loop(
         &mut terminal,
         &mut state,
         interval,
-        &request_sender,
-        &response_receiver,
+        &workers,
         &mut action,
         keyboard_enhanced,
     );
@@ -123,86 +148,154 @@ where
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+fn needs_detail(mode: AppMode) -> bool {
+    matches!(mode, AppMode::Overview | AppMode::Disk | AppMode::Hardware)
+}
+
 fn run_loop<A>(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut UiState,
     interval: RefreshInterval,
-    requests: &mpsc::Sender<WorkerRequest>,
-    responses: &mpsc::Receiver<WorkerResponse>,
+    workers: &Workers,
     action: &mut A,
     keyboard_enhanced: bool,
-) -> Result<()>
+) -> Result<RuntimeReport>
 where
     A: FnMut(ProcessSignalKind, i32, u64, u64) -> std::result::Result<String, String>,
 {
+    let started = Instant::now();
+    let mut stats = RuntimeStats::default();
+    let mut redraw = RedrawGate::default();
     let mut refresh = Duration::from_millis(interval.as_millis());
     let mut next_sample = Instant::now();
-    let mut loaded_detail_mode = None;
-    // in-flight 标志防止 worker 变慢时请求越积越多。
+    let mut revision = DetailRevision::new(state.mode);
+    let mut loaded_detail = None;
     let mut sample_in_flight = false;
     let mut detail_in_flight = false;
     loop {
-        // `+`/`-` 改了间隔就跟着走；调小时把已排定的下一拍拉近，
-        // 否则从 60s 调回 1s 还要干等最后一个 60s 周期。
         let configured = Duration::from_millis(state.interval_millis);
         if configured != refresh {
             refresh = configured;
             next_sample = next_sample.min(Instant::now() + refresh);
         }
-        if loaded_detail_mode != Some(state.mode) && !detail_in_flight {
-            loaded_detail_mode = Some(state.mode);
-            // 概览页也要磁盘数据，所以它同样触发一次懒加载。
-            if matches!(
-                state.mode,
-                AppMode::Overview | AppMode::Disk | AppMode::Hardware | AppMode::Sensors
-            ) && requests.send(WorkerRequest::Detail(state.mode)).is_ok()
-            {
-                detail_in_flight = true;
-            }
+        if revision.update(state.mode, false) {
+            loaded_detail = None;
+            state.detail_error = None;
+            redraw.invalidate();
+        }
+        let ticket = revision.ticket();
+        if needs_detail(state.mode) && loaded_detail != Some(ticket) && !detail_in_flight {
+            workers
+                .details
+                .try_send(ticket)
+                .map_err(|error| anyhow::anyhow!("detail worker unavailable: {error}"))?;
+            loaded_detail = Some(ticket);
+            detail_in_flight = true;
         }
         if !state.paused && !sample_in_flight && Instant::now() >= next_sample {
-            let detail_pid = state.selected_process_pid();
-            let fps_enabled = state.fps_enabled;
-            if requests
-                .send(WorkerRequest::Sample {
-                    detail_pid,
-                    fps_enabled,
+            workers
+                .samples
+                .try_send(SampleRequest {
+                    detail_pid: state.selected_process_pid(),
+                    fps_enabled: state.fps_enabled,
+                    submitted_at: Instant::now(),
                 })
-                .is_ok()
-            {
-                sample_in_flight = true;
-            }
+                .map_err(|error| anyhow::anyhow!("sample worker unavailable: {error}"))?;
+            sample_in_flight = true;
             next_sample = Instant::now() + refresh;
         }
-        while let Ok(response) = responses.try_recv() {
+        while let Ok(response) = workers.responses.try_recv() {
             match response {
-                WorkerResponse::Sample(Ok(snapshot)) => {
-                    state.set_snapshot(*snapshot);
+                Response::Sample {
+                    result,
+                    queue_time,
+                    service_time,
+                    panicked,
+                } => {
+                    anyhow::ensure!(!panicked, "sampler panicked; terminal restored");
                     sample_in_flight = false;
+                    stats.samples += 1;
+                    stats.sample_queue.record(queue_time);
+                    stats.sample_service.record(service_time);
+                    if service_time > refresh {
+                        stats.sample_overruns += 1;
+                    }
+                    match result {
+                        // Pause freezes the displayed sample, including any result
+                        // that was already in flight when Space was pressed.
+                        Ok(snapshot) if !state.paused => {
+                            state.set_snapshot(*snapshot);
+                            if revision.update(state.mode, false) {
+                                loaded_detail = None;
+                            }
+                            redraw.invalidate();
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            stats.sample_errors += 1;
+                            state.status = state
+                                .strings()
+                                .status_sample_failed
+                                .replace("{error}", &error);
+                            redraw.invalidate();
+                        }
+                    }
                 }
-                WorkerResponse::Sample(Err(error)) => {
-                    state.status = state
-                        .strings()
-                        .status_sample_failed
-                        .replace("{error}", &error);
-                    sample_in_flight = false;
-                }
-                WorkerResponse::Detail(result) => {
-                    let text = state.strings();
-                    state.apply_detail(
-                        result.map_err(|error| text.detail_load_failed.replace("{error}", &error)),
-                    );
+                Response::Detail {
+                    ticket,
+                    result,
+                    service_time,
+                    panicked,
+                } => {
+                    anyhow::ensure!(!panicked, "detail worker panicked; terminal restored");
                     detail_in_flight = false;
+                    stats.detail_service.record(service_time);
+                    if revision.accepts(ticket) {
+                        if result.is_err() {
+                            stats.detail_errors += 1;
+                        }
+                        let text = state.strings();
+                        state.apply_detail(
+                            result.map_err(|error| {
+                                text.detail_load_failed.replace("{error}", &error)
+                            }),
+                        );
+                        redraw.invalidate();
+                    } else {
+                        stats.discarded_details += 1;
+                    }
                 }
             }
         }
-        terminal
-            .draw(|frame| render(frame, state))
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        if event::poll(Duration::from_millis(80))? {
-            if let Event::Key(key) = event::read()? {
-                // ^L：终端被外部输出弄花时强制全量重绘（差量渲染修不回来）。
+        if redraw.take() {
+            let before = Instant::now();
+            terminal.draw(|frame| render(frame, state))?;
+            stats.render_service.record(before.elapsed());
+            stats.renders += 1;
+        }
+        // A stale result just freed the detail lane. Do not wait for a long
+        // sample interval before requesting the page the user actually selected.
+        if needs_detail(state.mode) && loaded_detail != Some(revision.ticket()) && !detail_in_flight
+        {
+            continue;
+        }
+        let timeout = poll_timeout(
+            Instant::now(),
+            next_sample,
+            state.paused,
+            sample_in_flight || detail_in_flight,
+        );
+        if !event::poll(timeout)? {
+            continue;
+        }
+        match event::read()? {
+            Event::Resize(_, _) => {
+                terminal.clear()?;
+                redraw.invalidate();
+            }
+            Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
+                stats.input_events += 1;
+                redraw.invalidate();
                 if key.code == crossterm::event::KeyCode::Char('l')
                     && key
                         .modifiers
@@ -211,15 +304,19 @@ where
                     terminal.clear()?;
                     continue;
                 }
+                let was_paused = state.paused;
                 if state.handle_key(key) {
                     break;
                 }
+                if was_paused && !state.paused {
+                    next_sample = Instant::now();
+                }
                 if state.take_refresh_request() {
                     next_sample = Instant::now();
-                    loaded_detail_mode = None;
+                    revision.update(state.mode, true);
+                    loaded_detail = None;
                 }
                 if let Some(pending) = state.take_completed_action() {
-                    // 进程操作可能要走 sudo 的终端密码提示，先退出 TUI。
                     if keyboard_enhanced {
                         pop_keyboard_enhancement();
                     }
@@ -241,11 +338,13 @@ where
                             .status_action_failed
                             .replace("{error}", &error),
                     };
+                    next_sample = Instant::now();
                 }
             }
+            _ => {}
         }
     }
-    Ok(())
+    Ok(stats.report(started.elapsed()))
 }
 
 #[cfg(test)]
@@ -279,6 +378,7 @@ mod tests {
             }],
             gpu: None,
             capabilities: vec!["cpu".into()],
+            gpu_process_coverage: None,
             uptime_seconds: Some(11 * 3_600),
             soc: None,
             topology: None,

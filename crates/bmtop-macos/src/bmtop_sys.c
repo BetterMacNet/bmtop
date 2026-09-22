@@ -359,59 +359,52 @@ static uint64_t sum_app_usage(CFDictionaryRef props) {
         if (time_ref == NULL || CFGetTypeID(time_ref) != CFNumberGetTypeID()) continue;
         int64_t value = 0;
         if (CFNumberGetValue(time_ref, kCFNumberSInt64Type, &value) && value > 0) {
-            total += (uint64_t)value;
+            total = UINT64_MAX - total < (uint64_t)value ? UINT64_MAX : total + (uint64_t)value;
         }
     }
     return total;
 }
 
 size_t bmtop_read_gpu_process_times(bmtop_gpu_time_raw *out, size_t capacity) {
-    if (!out || capacity == 0) return 0;
     io_service_t accelerator =
         IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"));
-    if (accelerator == 0) return 0;
+    if (accelerator == 0) return SIZE_MAX;
     io_iterator_t children;
     if (IORegistryEntryGetChildIterator(accelerator, kIOServicePlane, &children) !=
         kIOReturnSuccess) {
         IOObjectRelease(accelerator);
-        return 0;
+        return SIZE_MAX;
     }
     size_t written = 0;
     io_object_t child;
     while ((child = IOIteratorNext(children)) != 0) {
-        io_name_t class_name;
-        IOObjectGetClass(child, class_name);
+        io_name_t class_name = {0};
+        if (IOObjectGetClass(child, class_name) != KERN_SUCCESS) {
+            IOObjectRelease(child);
+            continue;
+        }
         if (strncmp(class_name, "AGXDeviceUserClient", 19) != 0) {
             IOObjectRelease(child);
             continue;
         }
         CFMutableDictionaryRef props = NULL;
         if (IORegistryEntryCreateCFProperties(child, &props, kCFAllocatorDefault, 0) ==
-            kIOReturnSuccess) {
+            kIOReturnSuccess && props != NULL) {
             CFStringRef creator = CFDictionaryGetValue(props, CFSTR("IOUserClientCreator"));
             char buffer[256] = {0};
             int pid = -1;
-            if (creator != NULL &&
+            if (creator != NULL && CFGetTypeID(creator) == CFStringGetTypeID() &&
                 CFStringGetCString(creator, buffer, sizeof(buffer), kCFStringEncodingUTF8)) {
                 sscanf(buffer, "pid %d,", &pid);
             }
             uint64_t gpu_time = pid > 0 ? sum_app_usage(props) : 0;
             if (pid > 0 && gpu_time > 0) {
-                /* 同一进程可能有多个 user client，就地合并 */
-                size_t slot = written;
-                for (size_t i = 0; i < written; i++) {
-                    if (out[i].pid == pid) {
-                        slot = i;
-                        break;
-                    }
-                }
-                if (slot < written) {
-                    out[slot].gpu_time_ns += gpu_time;
-                } else if (written < capacity) {
+                if (out && written < capacity) {
                     out[written].pid = pid;
                     out[written].gpu_time_ns = gpu_time;
-                    written++;
                 }
+                /* Return observed count, NOT merely stored count. */
+                if (written < SIZE_MAX - 1) written++;
             }
             CFRelease(props);
         }
@@ -420,4 +413,35 @@ size_t bmtop_read_gpu_process_times(bmtop_gpu_time_raw *out, size_t capacity) {
     IOObjectRelease(children);
     IOObjectRelease(accelerator);
     return written;
+}
+
+/* GPU metadata via IORegistry; absent property means unknown, never a slow
+ * system_profiler subprocess on the sampling thread. */
+int bmtop_read_gpu_model(char *out, size_t capacity) {
+    if (!out || capacity == 0) return -1;
+    out[0] = '\0';
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    if (IOServiceGetMatchingServices(kIOMainPortDefault,
+            IOServiceMatching("IOAccelerator"), &iterator) != KERN_SUCCESS) return -1;
+    io_service_t service;
+    int result = -1;
+    while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        CFTypeRef value = IORegistryEntryCreateCFProperty(service, CFSTR("model"), kCFAllocatorDefault, 0);
+        if (value && CFGetTypeID(value) == CFStringGetTypeID()) {
+            if (CFStringGetCString((CFStringRef)value, out, (CFIndex)capacity, kCFStringEncodingUTF8)) result = 0;
+        } else if (value && CFGetTypeID(value) == CFDataGetTypeID()) {
+            CFIndex length = CFDataGetLength((CFDataRef)value);
+            if (length > 0) {
+                size_t copy = (size_t)length < capacity - 1 ? (size_t)length : capacity - 1;
+                memcpy(out, CFDataGetBytePtr((CFDataRef)value), copy);
+                out[copy] = '\0';
+                result = 0;
+            }
+        }
+        if (value) CFRelease(value);
+        IOObjectRelease(service);
+        if (result == 0) break;
+    }
+    IOObjectRelease(iterator);
+    return result;
 }

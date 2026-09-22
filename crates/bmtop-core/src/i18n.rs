@@ -258,28 +258,28 @@ strings! {
     cli_about_completion => "把 bmtop 的 shell 补全脚本打印到标准输出"
                           / "Print a shell completion script for bmtop to stdout",
     // 同上，单行；三条安装命令靠 \n 各自占一行。
-    cli_completion_long => "把 bmtop 的 shell 补全脚本打印到标准输出。\n\n它只负责输出脚本，不安装任何东西、不改任何文件。把输出重定向到你的 shell 启动时会读取的目录，然后开一个新 shell：\n\n  bash  bmtop completion bash > $(brew --prefix)/etc/bash_completion.d/bmtop\n  zsh   bmtop completion zsh  > $(brew --prefix)/share/zsh/site-functions/_bmtop\n  fish  bmtop completion fish > ~/.config/fish/completions/bmtop.fish\n\n没装 Homebrew 的话，bash 的 $BASH_COMPLETION_COMPAT_DIR 或 zsh 的 $fpath 里任意一个目录都行，`echo $fpath` 可以看到候选。\n\n装好之后按 <Tab> 能补全子命令、参数以及参数的取值——比如 `bmtop ps --sort <Tab>` 会列出 cpu / memory / pid / energy / power。"
-                         / "Print a shell completion script for bmtop to stdout.\n\nIt only writes the script to stdout — nothing is installed and no file is touched. Redirect it into the directory your shell loads at startup, then open a new shell:\n\n  bash  bmtop completion bash > $(brew --prefix)/etc/bash_completion.d/bmtop\n  zsh   bmtop completion zsh  > $(brew --prefix)/share/zsh/site-functions/_bmtop\n  fish  bmtop completion fish > ~/.config/fish/completions/bmtop.fish\n\nWithout Homebrew, any directory on bash's $BASH_COMPLETION_COMPAT_DIR or zsh's $fpath works; `echo $fpath` shows the candidates.\n\nOnce loaded, <Tab> completes subcommands, flags and flag values — for instance `bmtop ps --sort <Tab>` offers cpu / memory / pid / energy / power.",
+    cli_completion_long => "把 bmtop 的 shell 补全脚本打印到标准输出。\n\n它只负责输出脚本，不安装任何东西、不改任何文件。把输出重定向到你的 shell 启动时会读取的目录，然后开一个新 shell：\n\n  bash  bmtop completion bash > $(brew --prefix)/etc/bash_completion.d/bmtop\n  zsh   bmtop completion zsh  > $(brew --prefix)/share/zsh/site-functions/_bmtop\n  fish  bmtop completion fish > ~/.config/fish/completions/bmtop.fish\n\n没装 Homebrew 的话，bash 的 $BASH_COMPLETION_COMPAT_DIR 或 zsh 的 $fpath 里任意一个目录都行，`echo $fpath` 可以看到候选。\n\n装好之后按 <Tab> 能补全子命令、参数以及参数的取值——比如 `bmtop ps --sort <Tab>` 会列出 cpu / gpu / memory / pid / energy / power。"
+                         / "Print a shell completion script for bmtop to stdout.\n\nIt only writes the script to stdout — nothing is installed and no file is touched. Redirect it into the directory your shell loads at startup, then open a new shell:\n\n  bash  bmtop completion bash > $(brew --prefix)/etc/bash_completion.d/bmtop\n  zsh   bmtop completion zsh  > $(brew --prefix)/share/zsh/site-functions/_bmtop\n  fish  bmtop completion fish > ~/.config/fish/completions/bmtop.fish\n\nWithout Homebrew, any directory on bash's $BASH_COMPLETION_COMPAT_DIR or zsh's $fpath works; `echo $fpath` shows the candidates.\n\nOnce loaded, <Tab> completes subcommands, flags and flag values — for instance `bmtop ps --sort <Tab>` offers cpu / gpu / memory / pid / energy / power.",
 
     // —— 全局与子命令参数说明 ——
     cli_help_interval => "采样间隔，例如 `2s`、`500ms`" / "Sampling interval, e.g. `2s`, `500ms`",
-    cli_help_format   => "一次性子命令的输出格式" / "Output format for one-shot subcommands",
+    cli_help_format   => "子命令输出格式；连续 JSON 请使用 jsonl" / "Output format; use jsonl for repeated JSON samples",
     cli_help_watch    => "持续采样直到被中断，而不是只打印一次"
                        / "Keep sampling until interrupted instead of printing once",
     cli_help_count    => "采样 N 次后退出（隐含 --watch 的循环语义），供脚本使用"
                        / "Sample N times then exit (implies the --watch loop); for scripting",
     cli_help_enhanced => "合并一次 sudo powermetrics 采样（只有 gpu 和 sensors 接受）"
                        / "Merge one sudo `powermetrics` sample in (only `gpu` and `sensors` accept it)",
-    cli_help_sensitive => "不脱敏硬件标识（序列号、UUID）"
-                        / "Do not redact hardware identifiers (serial numbers, UUIDs)",
+    cli_help_sensitive => "关闭隐私过滤：可暴露硬件标识和选中进程参数"
+                        / "Disable privacy filtering: exposes identifiers and selected process arguments",
     cli_help_ps_pid   => "只看这一个 PID" / "Only this PID",
     cli_help_ps_user  => "只看该用户拥有的进程" / "Only processes owned by this user",
-    cli_help_ps_sort  => "排序列：cpu | memory | pid | energy | power"
-                       / "Sort column: cpu | memory | pid | energy | power",
+    cli_help_ps_sort  => "排序列：cpu | gpu | memory | pid | energy | power"
+                       / "Sort column: cpu | gpu | memory | pid | energy | power",
     cli_help_ps_limit => "排序后只保留前 N 行" / "Keep only the first N rows (truncated after sorting)",
     cli_help_top_mode => "直接打开某一页：1 概览、2 进程 …… 9 传感器"
                        / "Open on a specific page: 1 overview, 2 processes, … 9 sensors",
-    cli_help_net_conn => "同时列出活动的网络连接" / "Also list active network connections",
+    cli_help_net_conn => "列出网络连接而不是接口统计" / "List network connections instead of interface statistics",
     cli_help_hw_cat   => "只看某一类，例如 `SPDisplaysDataType`；省略则全部列出"
                        / "Limit to one category, e.g. `SPDisplaysDataType`; omit to list all",
     cli_help_shell    => "为哪个 shell 生成脚本" / "Which shell to emit the script for",

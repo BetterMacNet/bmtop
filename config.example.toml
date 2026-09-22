@@ -1,0 +1,15 @@
+# bmtop configuration v1. Keys are validated; unknown keys are errors.
+# CLI > BMTOP_* environment > this file > built-in defaults.
+config_version = 1
+interval = "1s"                  # 250ms through 60s
+language = "en"                  # en / zh; omit to follow the locale
+privacy = "default"              # strict / default / off (see docs/PRIVACY.md)
+default_mode = "overview"         # overview/processes/cpu/memory/network/disk/gpu/hardware/sensors
+
+[process]
+sort = "cpu"                     # cpu/gpu/memory/pid/energy/power; documented aliases accepted
+tree = false
+hide_idle = false
+show_full_path = false
+# FPS / sudo / enhanced privileges cannot be enabled by this configuration.
+# Key presses change this session only. No automatic dotfile writes.

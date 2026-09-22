@@ -1,6 +1,11 @@
 //! Native macOS collectors. Platform-specific `unsafe` code is isolated in the
 //! C shim and exposed here through owned Rust values.
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
+
+mod command;
+mod connections;
+mod gpu_buffer;
 mod pmenergy;
 mod powermetrics;
 
@@ -25,6 +30,24 @@ pub mod link;
 #[cfg(target_os = "macos")]
 pub fn disk_io_available() -> bool {
     ffi::disk_io_counters().is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn disk_io_available() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub struct MacCollector;
+#[cfg(not(target_os = "macos"))]
+impl MacCollector {
+    pub fn new(_config: CollectorConfig) -> Self {
+        Self
+    }
+    pub fn set_fps_enabled(&mut self, _enabled: bool) {}
+    pub fn snapshot(&mut self, _detail_pid: Option<i32>) -> Result<SystemSnapshot, CollectorError> {
+        Err(CollectorError::UnsupportedPlatform)
+    }
 }
 
 pub mod rdma;
@@ -180,6 +203,7 @@ mod ffi {
             write_ops: *mut u64,
         ) -> i32;
         pub fn bmtop_read_gpu_process_times(out: *mut GpuTimeRaw, capacity: usize) -> usize;
+        pub fn bmtop_read_gpu_model(out: *mut u8, capacity: usize) -> i32;
     }
 
     #[repr(C)]
@@ -284,12 +308,20 @@ mod ffi {
         (rc == 0).then_some(counters)
     }
 
-    /// 每进程累计 GPU 时间（纳秒），上限 256 项。
-    pub fn gpu_process_times() -> Vec<GpuTimeRaw> {
-        let mut buffer = vec![GpuTimeRaw::default(); 256];
-        let written = unsafe { bmtop_read_gpu_process_times(buffer.as_mut_ptr(), buffer.len()) };
-        buffer.truncate(written.min(256));
-        buffer
+    /// Native shim returns observed client count even when output is too small.
+    pub fn gpu_process_times() -> (Vec<GpuTimeRaw>, bmtop_core::GpuProcessCoverage) {
+        crate::gpu_buffer::collect(|buffer: &mut [GpuTimeRaw]| unsafe {
+            bmtop_read_gpu_process_times(buffer.as_mut_ptr(), buffer.len())
+        })
+    }
+
+    pub fn gpu_model_name() -> Option<String> {
+        let mut name = [0u8; 128];
+        if unsafe { bmtop_read_gpu_model(name.as_mut_ptr(), name.len()) } == 0 {
+            c_string(&name)
+        } else {
+            None
+        }
     }
 
     pub fn process_name(value: &ProcessRaw) -> String {
@@ -334,6 +366,7 @@ impl Default for CollectorConfig {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub struct MacCollector {
     config: CollectorConfig,
     previous_cpu: Option<ffi::CpuTicks>,
@@ -348,14 +381,14 @@ pub struct MacCollector {
     /// uid → 用户名。以前每行每 uid fork 一次 `/usr/bin/id`，
     /// 1s 间隔 × 上千进程是真实的开销；uid 映射基本不变，缓存整个进程生命周期。
     user_names: HashMap<u32, String>,
-    /// GPU 型号名只取一次（`system_profiler` 是子进程，硬件元数据不会变）。
+    /// GPU 型号名只取一次（IORegistry 最佳努力查询，不阻塞于 system_profiler）。
     gpu_name: Option<Option<String>>,
     /// SoC 采集器：外层 None = 未尝试，内层 None = 初始化失败（Intel 等），不再重试。
     soc: Option<Option<soc::SocCollector>>,
     /// 上次磁盘 I/O 累计值（速率差分用）。
     previous_disk_io: Option<(Instant, [u64; 4])>,
-    /// 上次每进程 GPU 累计时间（pid → ns）。
-    previous_gpu_times: HashMap<i32, u64>,
+    /// 上次每进程 GPU 累计时间（pid + 启动时间 → ns）。
+    previous_gpu_times: HashMap<(i32, u64, u64), u64>,
     previous_gpu_at: Option<Instant>,
     /// 链路探测缓存（getifaddrs/ioctl/CoreWLAN 比 1s 采样贵，5s 刷一次）。
     link_cache: Option<(Instant, bmtop_core::LinkInfo)>,
@@ -366,6 +399,7 @@ pub struct MacCollector {
     topology: Option<Option<bmtop_core::CpuTopology>>,
 }
 
+#[cfg(target_os = "macos")]
 impl MacCollector {
     pub fn new(config: CollectorConfig) -> Self {
         Self {
@@ -444,7 +478,17 @@ impl MacCollector {
             });
             let topology = self.topology.get_or_insert_with(soc::read_topology).clone();
             let disk_io = self.read_disk_io_rates(now);
-            self.apply_gpu_percent(&mut processes, &soc_metrics, now);
+            let gpu_process_coverage = self.apply_gpu_percent(&mut processes, &soc_metrics, now);
+            capabilities.push(
+                if !gpu_process_coverage.available {
+                    "gpu_process_times:unavailable"
+                } else if gpu_process_coverage.truncated {
+                    "gpu_process_times:truncated"
+                } else {
+                    "gpu_process_times"
+                }
+                .to_string(),
+            );
             // 功耗摊分要等 GPU% 算完（按 CPU/GPU 占比分账），所以排在后面。
             apply_process_power(&mut processes, soc_metrics.as_ref().map(|soc| &soc.power));
             let link = self.read_link_cached(now);
@@ -458,6 +502,7 @@ impl MacCollector {
                 interfaces,
                 gpu,
                 capabilities,
+                gpu_process_coverage: Some(gpu_process_coverage),
                 uptime_seconds: uptime_seconds(),
                 soc: soc_metrics,
                 topology,
@@ -548,35 +593,55 @@ impl MacCollector {
         processes: &mut [bmtop_core::ProcessRow],
         soc_metrics: &Option<bmtop_core::SocMetrics>,
         now: Instant,
-    ) {
-        let current: HashMap<i32, u64> = ffi::gpu_process_times()
-            .into_iter()
-            .map(|entry| (entry.pid, entry.gpu_time_ns))
-            .collect();
-        let previous = std::mem::replace(&mut self.previous_gpu_times, current.clone());
-        let previous_at = self.previous_gpu_at.replace(now);
-        let Some(previous_at) = previous_at else {
-            return; // 首个采样没有基线
-        };
-        let elapsed = now.duration_since(previous_at).as_secs_f64();
-        if elapsed <= 0.0 || previous.is_empty() {
-            return;
+    ) -> bmtop_core::GpuProcessCoverage {
+        let (entries, coverage) = ffi::gpu_process_times();
+        // Never normalize a partial set up to the whole system's GPU activity.
+        if !coverage.available || coverage.truncated {
+            self.previous_gpu_times.clear();
+            self.previous_gpu_at = None;
+            return coverage;
         }
-        // pid → 每秒 GPU 毫秒数；新出现的 pid 跳一拍，只防倒退。
-        let mut raw_percent_total = 0.0;
-        let per_pid: HashMap<i32, f64> = current
+        let mut by_pid: HashMap<i32, u64> = HashMap::new();
+        for entry in entries {
+            let total = by_pid.entry(entry.pid).or_default();
+            *total = total.saturating_add(entry.gpu_time_ns);
+        }
+        // Start time is part of identity: GPU history must be as PID-reuse-safe
+        // as CPU / energy history. Do not assign an old PID's time to a new task.
+        let current: HashMap<(i32, u64, u64), u64> = processes
             .iter()
-            .filter_map(|(pid, cur)| {
-                let prev = previous.get(pid)?;
-                (cur >= prev).then(|| {
-                    let gpu_ms = (cur - prev) as f64 / elapsed / 1e6;
-                    let percent = gpu_ms / 10.0; // 1000 ms/s == 100%
-                    raw_percent_total += percent;
-                    (*pid, percent)
+            .filter_map(|process| {
+                by_pid.get(&process.pid).map(|time| {
+                    (
+                        (
+                            process.pid,
+                            process.start_time_seconds,
+                            process.start_time_microseconds,
+                        ),
+                        *time,
+                    )
                 })
             })
             .collect();
-        // 按 IOReport 的系统 GPU 活跃度归一，让列合计与 GPU 卡一致。
+        let previous = std::mem::replace(&mut self.previous_gpu_times, current.clone());
+        let Some(previous_at) = self.previous_gpu_at.replace(now) else {
+            return coverage;
+        };
+        let elapsed = now.saturating_duration_since(previous_at).as_secs_f64();
+        if elapsed <= 0.0 {
+            return coverage;
+        }
+        let mut raw_percent_total = 0.0;
+        let per_pid: HashMap<i32, f64> = current
+            .iter()
+            .filter_map(|(identity, cur)| {
+                let previous = previous.get(identity)?;
+                let delta = cur.checked_sub(*previous)?;
+                let percent = delta as f64 / elapsed / 10_000_000.0;
+                raw_percent_total += percent;
+                Some((identity.0, percent))
+            })
+            .collect();
         let system_percent = soc_metrics
             .as_ref()
             .and_then(|soc| soc.gpu_active_percent)
@@ -586,11 +651,12 @@ impl MacCollector {
         } else {
             1.0
         };
-        for process in processes.iter_mut() {
+        for process in processes {
             if let Some(percent) = per_pid.get(&process.pid) {
                 process.gpu_percent = Some((percent * scale).clamp(0.0, 100.0));
             }
         }
+        coverage
     }
 
     #[cfg(target_os = "macos")]
@@ -770,6 +836,15 @@ impl MacCollector {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for MacCollector {
+    fn drop(&mut self) {
+        if self.fps_running {
+            link::fps_stop();
+        }
+    }
+}
+
 /// 累计计数器 → 速率。计数器倒退（接口重建 / 系统重置计数）或时间没有
 /// 前进时返回 `None`，让这一拍显示 `--` 而不是负数或天文数字。
 fn counter_rate(old: u64, new: u64, seconds: f64) -> Option<f64> {
@@ -777,6 +852,7 @@ fn counter_rate(old: u64, new: u64, seconds: f64) -> Option<f64> {
 }
 
 /// 两轮每核 tick → 每核百分比。首个样本或核数变化（不可能但防御）时为空。
+#[cfg(target_os = "macos")]
 fn per_core_percentages(previous: &[ffi::CpuTicks], current: &[ffi::CpuTicks]) -> Vec<f64> {
     if previous.len() != current.len() || current.is_empty() {
         return Vec::new();
@@ -851,10 +927,11 @@ fn ps_fallback(
     current_uid: u32,
     user_names: &mut HashMap<u32, String>,
 ) -> Vec<ProcessRow> {
-    let Ok(output) = Command::new("/bin/ps")
-        .args(["-axo", "pid=,ppid=,uid=,state=,%cpu=,rss=,comm="])
-        .output()
-    else {
+    let Ok(output) = command::output(
+        OsStr::new("/bin/ps"),
+        &["-axo", "pid=,ppid=,uid=,state=,%cpu=,rss=,comm="],
+        Duration::from_secs(3),
+    ) else {
         return Vec::new();
     };
     if !output.status.success() {
@@ -1050,23 +1127,10 @@ pub fn uptime_seconds() -> Option<u64> {
     None
 }
 
-/// GPU 型号名：`system_profiler SPDisplaysDataType` 的 `sppci_model`。
-/// 子进程较慢，调用方（collector）只取一次并缓存。
+/// A best-effort native GPU model query, never system_profiler in the sampler.
 #[cfg(target_os = "macos")]
 fn gpu_model_name() -> Option<String> {
-    let output = Command::new("/usr/sbin/system_profiler")
-        .args(["-json", "SPDisplaysDataType"])
-        .output()
-        .ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    value["SPDisplaysDataType"][0]["sppci_model"]
-        .as_str()
-        .map(str::to_string)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn gpu_model_name() -> Option<String> {
-    None
+    ffi::gpu_model_name()
 }
 
 /// 完整命令行（`KERN_PROCARGS2`）。受保护进程读不到时返回 `None`。
@@ -1166,65 +1230,27 @@ pub struct NetworkConnection {
     pub state: Option<String>,
 }
 
+pub use connections::parse_lsof_connections;
+
 pub fn network_connections() -> Result<Vec<NetworkConnection>, CollectorError> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("/usr/sbin/lsof")
-            .args(["-nP", "-i", "-F0pcnPT"])
-            .output()
-            .map_err(|error| CollectorError::Command {
-                program: "lsof".into(),
-                message: error.to_string(),
-            })?;
-        if !output.status.success() && output.stdout.is_empty() {
+        let output = command::output(
+            OsStr::new("/usr/sbin/lsof"),
+            &["-nP", "-i", "-F0pcfnPT"],
+            Duration::from_secs(5),
+        )?;
+        // lsof exits 1 for an empty selection. That is a valid empty report;
+        // distinguish actual diagnostics rather than calling zero sockets an error.
+        let empty_selection =
+            output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty();
+        if !output.status.success() && !empty_selection {
             return Err(CollectorError::Command {
                 program: "lsof".into(),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                message: "connection query failed; inspect permissions".into(),
             });
         }
-        let mut pid = None;
-        let mut command = None;
-        let mut protocol = None;
-        let mut endpoint = None;
-        let mut state = None;
-        let mut rows = Vec::new();
-        for field in String::from_utf8_lossy(&output.stdout)
-            .split('\0')
-            .filter(|value| !value.is_empty())
-        {
-            let (tag, value) = field.split_at(1);
-            match tag {
-                "p" => {
-                    if let Some(pid_value) = pid.take() {
-                        rows.push(NetworkConnection {
-                            pid: pid_value,
-                            command: command.take(),
-                            protocol: protocol.take(),
-                            endpoint: endpoint.take(),
-                            state: state.take(),
-                        });
-                    }
-                    pid = value.parse().ok();
-                }
-                "c" => command = Some(value.to_string()),
-                "P" => protocol = Some(value.to_string()),
-                "n" => endpoint = Some(value.to_string()),
-                "T" if value.starts_with("ST=") => {
-                    state = Some(value.trim_start_matches("ST=").to_string())
-                }
-                _ => {}
-            }
-        }
-        if let Some(pid_value) = pid {
-            rows.push(NetworkConnection {
-                pid: pid_value,
-                command,
-                protocol,
-                endpoint,
-                state,
-            });
-        }
-        Ok(rows)
+        Ok(parse_lsof_connections(&output.stdout))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1233,10 +1259,21 @@ pub fn network_connections() -> Result<Vec<NetworkConnection>, CollectorError> {
 }
 
 pub fn hardware_report(show_sensitive: bool) -> Result<HardwareReport, CollectorError> {
+    hardware_report_with_privacy(if show_sensitive {
+        bmtop_core::PrivacyMode::Off
+    } else {
+        bmtop_core::PrivacyMode::Default
+    })
+}
+
+pub fn hardware_report_with_privacy(
+    privacy: bmtop_core::PrivacyMode,
+) -> Result<HardwareReport, CollectorError> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("/usr/sbin/system_profiler")
-            .args([
+        let output = command::output(
+            OsStr::new("/usr/sbin/system_profiler"),
+            &[
                 "-json",
                 "SPHardwareDataType",
                 "SPDisplaysDataType",
@@ -1249,12 +1286,9 @@ pub fn hardware_report(show_sensitive: bool) -> Result<HardwareReport, Collector
                 "SPBluetoothDataType",
                 "SPAudioDataType",
                 "SPCameraDataType",
-            ])
-            .output()
-            .map_err(|error| CollectorError::Command {
-                program: "system_profiler".into(),
-                message: error.to_string(),
-            })?;
+            ],
+            command::DEFAULT_TIMEOUT,
+        )?;
         if !output.status.success() {
             return Err(CollectorError::Command {
                 program: "system_profiler".into(),
@@ -1266,14 +1300,12 @@ pub fn hardware_report(show_sensitive: bool) -> Result<HardwareReport, Collector
                 kind: "system_profiler".into(),
                 message: error.to_string(),
             })?;
-        if !show_sensitive {
-            redact_json(&mut report.sections);
-        }
+        privacy.redact_profiler(&mut report.sections);
         Ok(report)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = show_sensitive;
+        let _ = privacy;
         Err(CollectorError::UnsupportedPlatform)
     }
 }
@@ -1380,13 +1412,7 @@ pub fn parse_df_output(df_text: &str, mount_text: &str) -> Vec<DiskVolume> {
 pub fn disk_report() -> Result<Vec<DiskVolume>, CollectorError> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("/bin/df")
-            .args(["-kP"])
-            .output()
-            .map_err(|error| CollectorError::Command {
-                program: "df".into(),
-                message: error.to_string(),
-            })?;
+        let output = command::output(OsStr::new("/bin/df"), &["-kP"], Duration::from_secs(3))?;
         if !output.status.success() {
             return Err(CollectorError::Command {
                 program: "df".into(),
@@ -1394,8 +1420,7 @@ pub fn disk_report() -> Result<Vec<DiskVolume>, CollectorError> {
             });
         }
         // `mount` 拿不到时按空输出处理：宁可多列几个卷，也不能让磁盘页整个失败。
-        let mounts = Command::new("/sbin/mount")
-            .output()
+        let mounts = command::output(OsStr::new("/sbin/mount"), &[], Duration::from_secs(3))
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
             .unwrap_or_default();
         let volumes = parse_df_output(&String::from_utf8_lossy(&output.stdout), &mounts);
@@ -1422,37 +1447,24 @@ pub fn sensor_report(show_sensitive: bool) -> Result<serde_json::Value, Collecto
         .unwrap_or_else(|| serde_json::json!({})))
 }
 
+#[cfg(test)]
 fn redact_json(value: &mut serde_json::Map<String, serde_json::Value>) {
-    for (key, item) in value.iter_mut() {
-        let lower_key = key.to_ascii_lowercase();
-        // UDID 和 UUID 只差一个字母，`provisioning_UDID` 之前整串明文漏了出来。
-        let sensitive = lower_key.contains("serial")
-            || lower_key.contains("uuid")
-            || lower_key.contains("udid")
-            || lower_key.contains("address");
-        if sensitive {
-            *item = serde_json::Value::String("••••••".to_string());
-        } else if let serde_json::Value::Object(map) = item {
-            redact_json(map);
-        } else if let serde_json::Value::Array(items) = item {
-            for child in items {
-                if let serde_json::Value::Object(map) = child {
-                    redact_json(map);
-                }
-            }
-        }
-    }
+    bmtop_core::PrivacyMode::Default.redact_profiler(value);
+}
+
+pub fn sensor_report_with_privacy(
+    privacy: bmtop_core::PrivacyMode,
+) -> Result<serde_json::Value, CollectorError> {
+    let report = hardware_report_with_privacy(privacy)?;
+    Ok(report
+        .sections
+        .get("SPPowerDataType")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({})))
 }
 
 pub fn run_fixed_command(program: &OsStr, args: &[&str]) -> Result<Vec<u8>, CollectorError> {
-    let output =
-        Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|error| CollectorError::Command {
-                program: program.to_string_lossy().into_owned(),
-                message: error.to_string(),
-            })?;
+    let output = command::output(program, args, command::DEFAULT_TIMEOUT)?;
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -1737,6 +1749,7 @@ map auto_home            0          0          0   100%    /System/Volumes/Data/
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn per_core_percentages_require_matching_samples() {
         let ticks = |user, idle| ffi::CpuTicks {
             user,
@@ -1759,7 +1772,7 @@ map auto_home            0          0          0   100%    /System/Volumes/Data/
         // argc=3 | exec_path\0 | 填充\0 | argv...；argv 之后还有环境变量，不能读进来。
         let mut raw = 3i32.to_ne_bytes().to_vec();
         raw.extend_from_slice(b"/usr/bin/tool\0\0\0");
-        raw.extend_from_slice(b"tool\0--flag\0value with space\0HOME=/Users/mac\0");
+        raw.extend_from_slice(b"tool\0--flag\0value with space\0HOME=/Users/test\0");
         assert_eq!(
             parse_procargs2(&raw),
             Some(vec![

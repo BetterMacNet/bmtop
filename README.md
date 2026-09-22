@@ -1,3 +1,8 @@
+> **v0.2.1.** This release adds the documented sampling, privacy,
+> configuration, output, and diagnostics updates below. See
+> [compatibility](docs/COMPATIBILITY.md) and [performance methodology](docs/PERFORMANCE.md)
+> for verification boundaries.
+
 <h1 align="center">bmtop</h1>
 
 <p align="center">
@@ -17,6 +22,29 @@
 <p align="center">
   <img src="assets/overview.png" alt="bmtop overview — native SoC telemetry on Apple Silicon" width="920"/>
 </p>
+
+## Local implementation additions
+
+Independent sample/detail workers, dirty redraw, fail-closed privacy modes,
+versioned TOML preferences, dynamic GPU client coverage, connection enumeration
+fixes, additional CSV output and opt-in timing diagnostics are implemented here.
+See [configuration](docs/CONFIGURATION.md), [privacy](docs/PRIVACY.md),
+[output contracts](docs/OUTPUT-CONTRACT.md), [capability boundaries](docs/COMPATIBILITY.md)
+and [performance methodology](docs/PERFORMANCE.md).
+
+```sh
+bmtop --config config.example.toml --print-config
+bmtop --privacy strict network --connections --count 2 --format jsonl
+bmtop cpu --quick --format json
+bmtop --schema-version
+bmtop top --diagnostics-file timings.json
+```
+
+The example config is read-only. Key presses do not overwrite preferences.
+Timings files must not exist and are written on normal TUI exit. No snapshots,
+identifiers, sudo, FPS or upload are enabled by these additions. Hardware and
+sensors remain JSON/JSONL rather than misleading flat CSV; doctor retains its
+legacy top-level object. Review intentional privacy behavior changes before use.
 
 ## Highlights
 
@@ -206,15 +234,18 @@ measured CPU/GPU package power across processes by CPU/GPU share, so the column
 sums to the overview power card; it is an attribution model, not a measurement,
 and it is absent when SoC data is unavailable.
 
-Hardware identifiers are redacted in JSON by default; use `--show-sensitive`
-only when the local output is trusted. DRAM/ANE bandwidth rows appear where
+Hardware reports use a reviewed allowlist in safe modes. Use `--privacy strict`
+for reduced identifying detail; `--show-sensitive` is now a global alias for
+`--privacy off` and can expose selected process arguments as well as identifiers.
+Use off only when the local output is trusted. DRAM/ANE bandwidth rows appear where
 the kernel exposes AMC byte counters (some macOS 26 builds reject that
 IOReport group; the rows hide there).
 
 ## Development
 
 ```sh
-./scripts/verify.sh            # fmt, clippy -D warnings, all tests, doctor smoke check
+./scripts/verify.sh --fix-format # normalize format, then run strict checks
+./scripts/verify.sh              # format check, clippy, tests, doctor, helper tests
 ./scripts/build-universal.sh   # arm64 + x86_64 slices combined with lipo
 ./scripts/package-release.sh   # universal binary + tar.gz + sha256 in dist/
 ```
@@ -242,8 +273,8 @@ It runs `./scripts/bump-homebrew-formula.sh`, which is also usable by hand if
 CI is unavailable — it is idempotent, so re-running a release is safe:
 
 ```sh
-DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.2.0   # print the diff only
-GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.2.0  # commit and push the bump
+DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.2.1   # print the diff only
+GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.2.1  # commit and push the bump
 ```
 
 The workspace is split into `bmtop-core` (models, schema, i18n),

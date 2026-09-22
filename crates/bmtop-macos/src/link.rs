@@ -108,3 +108,22 @@ pub fn fps_read() -> Option<DisplayFps> {
         frame_interval_ms: interval_ms,
     })
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn read_link_info() -> LinkInfo {
+    LinkInfo::default()
+}
+#[cfg(not(target_os = "macos"))]
+pub fn fps_permission_granted() -> bool {
+    false
+}
+#[cfg(not(target_os = "macos"))]
+pub fn fps_start() -> FpsStart {
+    FpsStart::Unavailable
+}
+#[cfg(not(target_os = "macos"))]
+pub fn fps_stop() {}
+#[cfg(not(target_os = "macos"))]
+pub fn fps_read() -> Option<DisplayFps> {
+    None
+}

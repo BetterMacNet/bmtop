@@ -16,5 +16,6 @@ clap_complete.workspace = true
 bmtop-macos = { path = "../bmtop-macos" }
 bmtop-tui = { path = "../bmtop-tui" }
 serde_json.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true

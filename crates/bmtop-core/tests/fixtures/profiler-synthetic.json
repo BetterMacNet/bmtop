@@ -1,0 +1,22 @@
+{
+  "SPHardwareDataType": [{
+    "_name": "Synthetic personal workstation",
+    "machine_model": "Mac-SYNTHETIC",
+    "chip_type": "Synthetic Chip",
+    "serial_number": "SYNTHETIC_SECRET_SERIAL",
+    "provisioning_UDID": "SYNTHETIC_SECRET_UDID",
+    "future_identifier": "SYNTHETIC_SECRET_FUTURE",
+    "SYNTHETIC_SECRET_KEY": {"model": "untrusted-dynamic-key"}
+  }],
+  "SPUSBDataType": [{"_items": [[{
+    "_name": "Synthetic private device",
+    "serial_num": "SYNTHETIC_SECRET_USB",
+    "vendor_id": "0x1234",
+    "unknown_nested_field": ["SYNTHETIC_SECRET_NESTED"]
+  }]]}],
+  "SPPowerDataType": [{"sppower_battery_health_info": {
+    "sppower_battery_cycle_count": 42,
+    "sppower_battery_condition": "Normal"
+  }}],
+  "SYNTHETIC_SECRET_CATEGORY": [{"chip_type": "should-not-survive"}]
+}

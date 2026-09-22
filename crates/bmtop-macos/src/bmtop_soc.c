@@ -166,6 +166,7 @@ static kern_return_t smc_key_info_for(const char *key, smc_key_info *info) {
 #define MAX_TEMP_KEYS 64
 
 static IOReportSubscriptionRef g_subscription = NULL;
+static uint32_t g_available_groups = 0;
 static CFMutableDictionaryRef g_channels = NULL;
 static CFDictionaryRef g_prev_sample = NULL;
 static uint64_t g_prev_time = 0;
@@ -507,14 +508,17 @@ static void read_gpu_states(CFDictionaryRef item, bmtop_soc_sample_raw *out) {
 int bmtop_soc_init(void) {
     if (g_subscription != NULL) return 0;
 
+    g_available_groups = 0;
     CFDictionaryRef energy = IOReportCopyChannelsInGroup(CFSTR("Energy Model"), NULL, 0, 0, 0);
     if (energy == NULL) return -1; /* Intel 或系统不支持 */
+    g_available_groups = 1u;
 
     const CFStringRef extra_groups[] = {CFSTR("GPU Stats"), CFSTR("CPU Stats"),
                                         CFSTR("Energy Counters"), CFSTR("AMC Stats")};
     for (size_t i = 0; i < sizeof(extra_groups) / sizeof(extra_groups[0]); i++) {
         CFDictionaryRef chan = IOReportCopyChannelsInGroup(extra_groups[i], NULL, 0, 0, 0);
         if (chan != NULL) {
+            g_available_groups |= (1u << (i + 1));
             IOReportMergeChannels(energy, chan, NULL);
             CFRelease(chan);
         }
@@ -543,6 +547,8 @@ int bmtop_soc_init(void) {
     }
     return 0;
 }
+
+uint32_t bmtop_soc_available_groups(void) { return g_available_groups; }
 
 int bmtop_soc_smc_available(void) { return g_smc_conn != 0; }
 int bmtop_soc_thermal_available(void) { return g_thermal_token >= 0; }

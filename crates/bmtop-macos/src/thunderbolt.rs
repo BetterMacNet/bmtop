@@ -2,7 +2,7 @@
 //! 桥接成员来自 ifconfig/networksetup 子进程，进程内缓存。
 
 use bmtop_core::{TbBus, TbDevice};
-use std::process::Command;
+use std::{ffi::OsStr, time::Duration};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -127,7 +127,11 @@ pub fn read_tb_switches() -> Vec<TbSwitchInfo> {
 /// 雷雳网桥成员（Mac 对 Mac 直连不会出现在 switch 树里，只在 bridge0 成员里）。
 pub fn read_bridge_peers() -> Vec<String> {
     let mut members: Vec<String> = Vec::new();
-    if let Ok(output) = Command::new("/sbin/ifconfig").arg("bridge0").output() {
+    if let Ok(output) = crate::command::output(
+        OsStr::new("/sbin/ifconfig"),
+        &["bridge0"],
+        Duration::from_secs(3),
+    ) {
         if output.status.success() {
             for line in String::from_utf8_lossy(&output.stdout).lines() {
                 let line = line.trim();
@@ -177,6 +181,11 @@ pub fn render_tb_tree(buses: &[TbBus], bridge_peers: &[String]) -> String {
         }
     }
     lines.join("\n")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn read_tb_switches() -> Vec<TbSwitchInfo> {
+    Vec::new()
 }
 
 #[cfg(test)]
