@@ -29,10 +29,35 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          release_notes=$(cat <<'EOF'
+          ## What's new
+
+          The generated commit notes below summarize this release.
+
+          ## Compatibility
+
+          Universal macOS binary for Apple Silicon and Intel. Optional SoC,
+          sensor, GPU and FPS metrics remain best-effort; unavailable sources
+          are omitted. See [compatibility](https://github.com/BetterMacNet/bmtop/blob/main/docs/COMPATIBILITY.md).
+
+          ## Known issues
+
+          Hardware coverage varies by Mac model and macOS build. Review the
+          capability list from `bmtop doctor --format json` before automation.
+
+          ## Install / upgrade
+
+          ```sh
+          brew update && brew upgrade bmtop
+          # or download the universal archive and verify its .sha256 file
+          ```
+          EOF
+          )
           gh release create "$GITHUB_REF_NAME" \
             dist/bmtop-macos-universal.tar.gz \
             dist/bmtop-macos-universal.tar.gz.sha256 \
             --title "bmtop $GITHUB_REF_NAME" \
+            --notes "$release_notes" \
             --generate-notes
 
   # tap 是另一个仓库，上面那个 job 的 github.token 对它没有写权限，

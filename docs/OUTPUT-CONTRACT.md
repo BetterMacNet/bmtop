@@ -38,6 +38,54 @@ errors are not silently treated as complete data. Available connection coverage
 still depends on local permissions and process churn. No packet capture, DNS
 lookup, elevated permissions or remote connection is introduced.
 
+## Synthetic examples
+
+The examples below are deliberately synthetic and contain no host identifiers.
+Timestamps and values are illustrative; field names and envelope shape are the
+contract.
+
+One JSON sample:
+
+```json
+{
+  "schema_version": 2,
+  "kind": "memory",
+  "captured_at": "2026-01-01T00:00:00.000Z",
+  "source": "available",
+  "capabilities": ["memory", "swap"],
+  "data": {
+    "memory": {
+      "total_bytes": 17179869184,
+      "used_bytes": 8589934592,
+      "swap_used_bytes": 0,
+      "swap_total_bytes": 0,
+      "pressure_percent": 18.5
+    },
+    "bandwidth": null
+  }
+}
+```
+
+A JSONL stream contains one complete envelope per line:
+
+```jsonl
+{"schema_version":2,"kind":"memory","captured_at":"2026-01-01T00:00:00.000Z","source":"available","capabilities":["memory"],"data":{"memory":{"total_bytes":17179869184,"used_bytes":8589934592},"bandwidth":null}}
+{"schema_version":2,"kind":"memory","captured_at":"2026-01-01T00:00:01.000Z","source":"available","capabilities":["memory"],"data":{"memory":{"total_bytes":17179869184,"used_bytes":8623489024},"bandwidth":null}}
+```
+
+A flat CSV stream is intended for supported row-oriented commands:
+
+```csv
+pid,cpu_percent,resident_bytes,threads,user,name
+42,12.5,104857600,8,"example","worker"
+43,,20971520,2,"example","helper"
+```
+
+Unknown numeric measurements are empty/null, not zero. CSV is intentionally
+rejected for nested hardware, sensors and doctor reports; use JSON or JSONL for
+those commands. Common semantic exit codes are `64` (usage), `69` (unavailable
+capability/platform), `70` (other failure), and `77` (permission denied).
+
 `--quick` only accepts single cpu/gpu/sensors samples and uses a real 250ms delta
 window; it does not promise the entire command completes in 250ms. Progress is
 written only to interactive stderr. No background caching daemon is added.

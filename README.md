@@ -8,12 +8,13 @@
 <p align="center">
   <b>A local-first terminal monitor for macOS.</b><br/>
   htop-style process control plus native Apple Silicon SoC telemetry — power, frequency,
-  temperature, fans — with no sudo and no daemons.
+  temperature, fans — with a no-sudo default path and no daemons.
 </p>
 
 <p align="center">
   <a href="https://github.com/BetterMacNet/bmtop/actions/workflows/ci.yml"><img src="https://github.com/BetterMacNet/bmtop/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/BetterMacNet/bmtop/releases/latest"><img src="https://img.shields.io/github/v/release/BetterMacNet/bmtop" alt="Latest release"/></a>
+  <a href="https://github.com/BetterMacNet/homebrew-tap/blob/main/Formula/bmtop.rb"><img src="https://img.shields.io/badge/Homebrew-bettermacnet%2Ftap-orange" alt="Homebrew formula"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"/></a>
   <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon%20%7C%20Intel)-black" alt="Platform"/>
   <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Rust"/>
@@ -23,34 +24,16 @@
   <img src="assets/overview.png" alt="bmtop overview — native SoC telemetry on Apple Silicon" width="920"/>
 </p>
 
-## Local implementation additions
-
-Independent sample/detail workers, dirty redraw, fail-closed privacy modes,
-versioned TOML preferences, dynamic GPU client coverage, connection enumeration
-fixes, additional CSV output and opt-in timing diagnostics are implemented here.
-See [configuration](docs/CONFIGURATION.md), [privacy](docs/PRIVACY.md),
-[output contracts](docs/OUTPUT-CONTRACT.md), [capability boundaries](docs/COMPATIBILITY.md)
-and [performance methodology](docs/PERFORMANCE.md).
-
-```sh
-bmtop --config config.example.toml --print-config
-bmtop --privacy strict network --connections --count 2 --format jsonl
-bmtop cpu --quick --format json
-bmtop --schema-version
-bmtop top --diagnostics-file timings.json
-```
-
-The example config is read-only. Key presses do not overwrite preferences.
-Timings files must not exist and are written on normal TUI exit. No snapshots,
-identifiers, sudo, FPS or upload are enabled by these additions. Hardware and
-sensors remain JSON/JSONL rather than misleading flat CSV; doctor retains its
-legacy top-level object. Review intentional privacy behavior changes before use.
+<p align="center">
+  <img src="assets/demo.gif" alt="bmtop pages and native telemetry demo" width="920"/>
+</p>
 
 ## Highlights
 
 - **Native SoC telemetry on Apple Silicon** — E/P cluster frequency and residency,
   CPU/GPU/ANE/DRAM power, system wall power, temperatures, fans and thermal
-  pressure, read directly via IOReport/SMC. No `sudo`, no `powermetrics` daemon.
+  pressure, read directly via IOReport/SMC. Normal collection needs no `sudo` and
+  does not run a `powermetrics` daemon.
 - **Per-process energy** — Activity Monitor's Energy Impact, computed from the
   same `/usr/share/pmenergy` coefficients Apple ships, plus an estimated
   per-process wattage derived from the measured CPU/GPU package power. Both
@@ -60,8 +43,10 @@ legacy top-level object. Review intentional privacy behavior changes before use.
   battery, hardware and sensors.
 - **Deep hardware awareness** — network link type (Ethernet speed / Wi-Fi
   generation), Thunderbolt topology, RDMA status, and opt-in display FPS.
-- **Scripting-grade output** — every panel is also a subcommand with stable
-  `json` / `jsonl` / `csv` output, versioned schema and sysexits-style exit codes.
+- **Scripting-grade output** — supported metric commands expose stable
+  `json` / `jsonl` / `csv` output, a versioned schema and sysexits-style exit codes.
+  Hardware, sensors and doctor intentionally reject CSV where a flat table would
+  misrepresent nested data.
 - **Local-first and privacy-conscious** — no telemetry, no network calls;
   hardware identifiers are redacted in JSON by default.
 - **top/htop muscle memory** — sorting, filtering, tree view and kill flows
@@ -98,6 +83,39 @@ git clone https://github.com/BetterMacNet/bmtop.git
 cd bmtop
 cargo install --path crates/bmtop
 ```
+
+## Quick start (30 seconds)
+
+```sh
+brew install bettermacnet/tap/bmtop
+bmtop                              # open the dashboard
+bmtop ps --sort energy --limit 10  # find energy consumers
+bmtop memory --format json         # emit one machine-readable snapshot
+```
+
+Use `bmtop doctor --format json` to check available capabilities before relying
+on optional SoC, GPU, sensor, FPS or link metrics.
+
+## Common workflows
+
+```sh
+# Find processes using the most memory or energy
+bmtop ps --sort memory --limit 10
+bmtop ps --sort energy --limit 10
+
+# Watch network throughput and save JSONL for a script
+bmtop network --count 60 --interval 1s --format jsonl > network.jsonl
+
+# Inspect hardware and privacy-safe capability boundaries
+bmtop doctor --format json
+bmtop hardware --privacy strict --format json
+
+# Collect a bounded CSV stream for shell or spreadsheet tooling
+bmtop memory --count 10 --interval 1s --format csv > memory.csv
+```
+
+See [output contracts](docs/OUTPUT-CONTRACT.md) for schema/format details and
+[privacy boundaries](docs/PRIVACY.md) before sharing diagnostic output.
 
 ## Usage
 
@@ -179,6 +197,42 @@ re-sorting between samples never moves your selection.
 Termination always requires confirmation and revalidates PID plus process
 start time. PID 0, PID 1 and the bmtop process itself are protected.
 
+## How bmtop fits
+
+| Tool | Best at | bmtop's difference |
+|------|---------|--------------------|
+| Activity Monitor | GUI inspection and system-integrated controls | Terminal-first workflows, native telemetry and scriptable output |
+| `top` / `htop` | Process-focused live views | Adds macOS hardware, SoC power, sensors and capability-aware reports |
+| Better Monitor | A broader desktop monitoring experience | A small local CLI/TUI with no daemon, upload or default sudo path |
+
+These are complementary tools, not a performance or feature-parity ranking.
+
+## Apple Silicon and Intel capabilities
+
+| Capability | Apple Silicon | Intel Mac |
+|------------|---------------|-----------|
+| CPU, memory, processes, network, disk and CLI output | Supported where readable | Supported where readable |
+| SoC cluster frequency/residency and package power | Best-effort native IOReport | Omitted when unavailable |
+| GPU utilization and process GPU time | Best-effort native sources | Omitted when unavailable |
+| Temperatures, fans and thermal pressure | Best-effort SMC/notification sources | Omitted or reduced when unavailable |
+| FPS | Opt-in; requires Screen Recording permission | Opt-in; requires Screen Recording permission |
+
+A missing optional metric is reported as unavailable rather than fabricated as
+zero. See the [full compatibility boundaries](docs/COMPATIBILITY.md) before
+comparing machines or OS releases.
+
+## Support and reporting
+
+- [Bug report](https://github.com/BetterMacNet/bmtop/issues/new?template=bug_report.md)
+- [Feature request](https://github.com/BetterMacNet/bmtop/issues/new?template=feature_request.md)
+- [Questions and discussions](https://github.com/BetterMacNet/bmtop/discussions)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Privacy boundaries](docs/PRIVACY.md)
+
+Do not paste `--privacy off` output, process arguments, identifiers, endpoints
+or credentials into public issues. Review and redact diagnostic output first.
+
 ## Pages
 
 **CPU** — E/P cluster frequency and residency, per-core load:
@@ -242,6 +296,10 @@ the kernel exposes AMC byte counters (some macOS 26 builds reject that
 IOReport group; the rows hide there).
 
 ## Development
+
+For a first-time walkthrough, see [Getting started](docs/GETTING-STARTED.md).
+Implementation details and maintainer-only validation examples live in
+[START-HERE.zh-CN.md](START-HERE.zh-CN.md) and the reference docs below.
 
 ```sh
 ./scripts/verify.sh --fix-format # normalize format, then run strict checks
