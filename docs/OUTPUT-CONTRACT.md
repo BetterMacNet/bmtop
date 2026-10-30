@@ -20,7 +20,8 @@ diagnostics version 1 are separate contracts.
 
 Most metric reports use JsonEnvelope. Doctor intentionally retains its legacy
 top-level shape instead of an incompatible nested data migration; it now adds
-schema_version/kind/version/captured_at. JSON requires a single sample; multiple
+schema_version/kind/version/captured_at plus additive `runtime` and `sources`
+compatibility fields. JSON requires a single sample; multiple
 samples use JSONL/table/CSV. `--count 0` is a usage error. `--count N` limits watch;
 network connections and hardware no longer silently ignore count/watch. Doctor
 rejects watch/count. CLI parser errors can be exit 2; semantic usage errors are
@@ -81,9 +82,11 @@ pid,cpu_percent,resident_bytes,threads,user,name
 43,,20971520,2,"example","helper"
 ```
 
-Unknown numeric measurements are empty/null, not zero. CSV is intentionally
-rejected for nested hardware, sensors and doctor reports; use JSON or JSONL for
-those commands. Common semantic exit codes are `64` (usage), `69` (unavailable
+Unknown numeric measurements are empty/null, not zero. A readable disk-I/O
+source may legitimately report zero rates while idle; an unavailable source is
+reported as null. CSV is intentionally rejected for nested hardware, sensors
+and doctor reports; use JSON or JSONL for those commands. Common semantic exit
+codes are `64` (usage), `69` (unavailable
 capability/platform), `70` (other failure), and `77` (permission denied).
 
 `--quick` only accepts single cpu/gpu/sensors samples and uses a real 250ms delta

@@ -1,8 +1,9 @@
 # Performance methodology and regression tools
 
 Script unit tests use synthetic inputs and are not benchmarks of bmtop.
-`test_native_contract.py` validates production C bounds through a mocked IOKit
-adapter, not real macOS performance or ABI compatibility.
+`test_native_contract.py` validates production C bounds through mocked IOKit
+adapters and checks the C/Rust FFI size/offset contract. It is not a real macOS
+performance or SDK/hardware compatibility test.
 
 The TUI has separate sampler and detail lanes with one-slot request queues.
 Native sampler ownership is exclusive; slow system_profiler/lsof/df/mount work

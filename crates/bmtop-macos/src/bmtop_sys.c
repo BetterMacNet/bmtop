@@ -286,8 +286,8 @@ int bmtop_read_gpu(bmtop_gpu_raw *out) {
 
 /* ---- 系统级磁盘 I/O（IOKit 注册表，无特权）----
  * Apple Silicon 上真实统计挂在 AppleAPFSVolume 的 Statistics 字典；
- * APFS 遍历四计数器全零时才退回传统 IOBlockStorageDriver
- * （mactop 按 kr!=success 兜底是死代码：无匹配也返回 success）。 */
+ * 只有 APFS 统计源不存在时才退回传统 IOBlockStorageDriver。
+ * 统计源存在但四计数器全零是合法的空闲状态，不能误判为不可用。 */
 static int64_t stats_number(CFDictionaryRef dict, const char *key) {
     CFStringRef key_ref =
         CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingUTF8);
@@ -305,13 +305,14 @@ static int64_t stats_number_or(CFDictionaryRef dict, const char *primary, const 
     return value != 0 ? value : stats_number(dict, fallback);
 }
 
-static void sum_disk_class(const char *class_name, uint64_t *read_bytes, uint64_t *write_bytes,
-                           uint64_t *read_ops, uint64_t *write_ops) {
+static int sum_disk_class(const char *class_name, uint64_t *read_bytes, uint64_t *write_bytes,
+                          uint64_t *read_ops, uint64_t *write_ops) {
     io_iterator_t iterator;
     if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(class_name),
                                      &iterator) != kIOReturnSuccess) {
-        return;
+        return -1;
     }
+    int found = 0;
     io_object_t entry;
     while ((entry = IOIteratorNext(iterator)) != 0) {
         CFMutableDictionaryRef props = NULL;
@@ -319,6 +320,7 @@ static void sum_disk_class(const char *class_name, uint64_t *read_bytes, uint64_
             kIOReturnSuccess) {
             CFDictionaryRef stats = CFDictionaryGetValue(props, CFSTR("Statistics"));
             if (stats != NULL && CFGetTypeID(stats) == CFDictionaryGetTypeID()) {
+                found = 1;
                 *read_bytes +=
                     (uint64_t)stats_number_or(stats, "Bytes read from block device", "Bytes (Read)");
                 *write_bytes += (uint64_t)stats_number_or(stats, "Bytes written to block device",
@@ -333,17 +335,19 @@ static void sum_disk_class(const char *class_name, uint64_t *read_bytes, uint64_
         IOObjectRelease(entry);
     }
     IOObjectRelease(iterator);
+    return found;
 }
 
 int bmtop_read_disk_io(uint64_t *read_bytes, uint64_t *write_bytes, uint64_t *read_ops,
                       uint64_t *write_ops) {
     if (!read_bytes || !write_bytes || !read_ops || !write_ops) return -1;
     *read_bytes = *write_bytes = *read_ops = *write_ops = 0;
-    sum_disk_class("AppleAPFSVolume", read_bytes, write_bytes, read_ops, write_ops);
-    if (*read_bytes == 0 && *write_bytes == 0 && *read_ops == 0 && *write_ops == 0) {
-        sum_disk_class("IOBlockStorageDriver", read_bytes, write_bytes, read_ops, write_ops);
-    }
-    return (*read_bytes || *write_bytes || *read_ops || *write_ops) ? 0 : -1;
+    int apfs_found = sum_disk_class("AppleAPFSVolume", read_bytes, write_bytes, read_ops,
+                                    write_ops);
+    if (apfs_found > 0) return 0;
+    int block_found = sum_disk_class("IOBlockStorageDriver", read_bytes, write_bytes, read_ops,
+                                     write_ops);
+    return (apfs_found > 0 || block_found > 0) ? 0 : -1;
 }
 
 /* ---- 每进程 GPU 时间（AGXDeviceUserClient 是 AGXAccelerator 的子节点）---- */

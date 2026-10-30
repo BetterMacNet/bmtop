@@ -1,5 +1,5 @@
-> **v0.2.1.** This release adds the documented sampling, privacy,
-> configuration, output, and diagnostics updates below. See
+> **v0.2.2.** This release adds macOS 27 compatibility diagnostics,
+> zero-versus-unavailable disk I/O semantics, and native FFI contracts. See
 > [compatibility](docs/COMPATIBILITY.md) and [performance methodology](docs/PERFORMANCE.md)
 > for verification boundaries.
 
@@ -280,9 +280,10 @@ passwords are never stored.
 
 Energy Impact uses the `energy_constants` in `/usr/share/pmenergy/default.plist`
 (CPU time weighted per QoS class, wakeups, disk I/O) fed by `proc_pid_rusage` —
-no root, no `powermetrics`. Two deliberate deviations from Activity Monitor:
-per-process network packets are excluded (no unprivileged interface for them),
-and where `ri_pkg_idle_wkups` stays flat — as it does on Apple Silicon — the
+no root, no `powermetrics`. Per-process network traffic remains intentionally
+excluded: macOS has no stable unprivileged PID-level byte counter, and interface
+totals cannot be attributed to individual processes without fabricating data.
+Where `ri_pkg_idle_wkups` stays flat — as it does on Apple Silicon — the
 wakeup term falls back to `ri_interrupt_wkups`. Estimated watts splits the
 measured CPU/GPU package power across processes by CPU/GPU share, so the column
 sums to the overview power card; it is an attribution model, not a measurement,
@@ -331,8 +332,8 @@ It runs `./scripts/bump-homebrew-formula.sh`, which is also usable by hand if
 CI is unavailable — it is idempotent, so re-running a release is safe:
 
 ```sh
-DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.2.1   # print the diff only
-GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.2.1  # commit and push the bump
+DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.2.2   # print the diff only
+GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.2.2  # commit and push the bump
 ```
 
 The workspace is split into `bmtop-core` (models, schema, i18n),

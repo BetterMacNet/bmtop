@@ -235,6 +235,40 @@ fn sensors_json_keeps_legacy_key_and_adds_soc() {
 }
 
 #[test]
+fn doctor_reports_runtime_manifest() {
+    let output = binary()
+        .args(["doctor", "--format", "json"])
+        .output()
+        .expect("bmtop binary should run");
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let runtime = &value["runtime"];
+    assert!(runtime["running_arch"].as_str().is_some());
+    for key in [
+        "os_product_version",
+        "os_build",
+        "kernel_release",
+        "hardware_model",
+        "machine_arch",
+        "chip_brand",
+        "translated",
+    ] {
+        assert!(
+            runtime.get(key).is_some(),
+            "doctor.runtime.{key} must exist"
+        );
+    }
+    for key in [
+        "ioreport", "smc", "thermal", "battery", "disk_io", "wifi", "rdma", "fps",
+    ] {
+        assert!(
+            value["sources"][key].as_str().is_some(),
+            "doctor.sources.{key} must be a status string"
+        );
+    }
+}
+
+#[test]
 fn doctor_reports_soc_probe() {
     let output = binary()
         .args(["doctor", "--format", "json"])

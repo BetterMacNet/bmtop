@@ -109,6 +109,20 @@ pub fn fps_read() -> Option<DisplayFps> {
     })
 }
 
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn ffi_layout_matches_link_header() {
+        assert_eq!(size_of::<RawEthLink>(), 48);
+        assert_eq!(offset_of!(RawEthLink, speed_mbps), 32);
+        assert_eq!(size_of::<RawWifiLink>(), 88);
+        assert_eq!(offset_of!(RawWifiLink, tx_rate_mbps), 80);
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn read_link_info() -> LinkInfo {
     LinkInfo::default()

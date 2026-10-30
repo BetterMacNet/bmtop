@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "bmtop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bmtop-core",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "bmtop-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "bmtop-macos"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bmtop-core",
  "cc",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "bmtop-tui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bmtop-core",

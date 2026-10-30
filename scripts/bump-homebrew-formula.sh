@@ -1,16 +1,16 @@
 #!/bin/sh
 # 把 Homebrew tap 里的 formula 指向某个已发布的 tag。
 #
-# 用法：scripts/bump-homebrew-formula.sh v0.2.1
+# 用法：scripts/bump-homebrew-formula.sh v0.2.2
 #
 # tap 是另一个仓库，release.yml 里 github.token 只对本仓库有权限，所以要一个
 # 对 tap 有 Contents:write 的 token，从 GH_TOKEN 读。
-# 本地试跑：DRY_RUN=1 scripts/bump-homebrew-formula.sh v0.2.1（只打印 diff，不推）
+# 本地试跑：DRY_RUN=1 scripts/bump-homebrew-formula.sh v0.2.2（只打印 diff，不推）
 set -eu
 
 tag=${1:-}
 if [ -z "$tag" ]; then
-    echo "usage: $0 <tag>   e.g. $0 v0.2.1" >&2
+    echo "usage: $0 <tag>   e.g. $0 v0.2.2" >&2
     exit 64
 fi
 

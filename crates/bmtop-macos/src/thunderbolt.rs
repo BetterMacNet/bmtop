@@ -40,7 +40,7 @@ fn c_str_field(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// 速度档 → 代际标签。阈值语义（≥14→TB5、≥12→TB4、>0→TB3、0→TB4 默认），
+/// 速度档 → 代际标签。未知速度保持 Unknown，不猜测具体代际。
 /// 外接设备优先用协商档（Current）。
 fn tb_mode(link_speed: i32, current_speed: i32, prefer_current: bool) -> &'static str {
     let speed = if prefer_current && current_speed > 0 {
@@ -52,7 +52,7 @@ fn tb_mode(link_speed: i32, current_speed: i32, prefer_current: bool) -> &'stati
         s if s >= 14 => "TB5",
         s if s >= 12 => "TB4",
         s if s > 0 => "TB3",
-        _ => "TB4",
+        _ => "Unknown",
     }
 }
 
@@ -63,18 +63,25 @@ pub fn build_tb_buses(switches: &[TbSwitchInfo]) -> Vec<TbBus> {
         .filter(|switch| switch.depth == 0)
         .map(|switch| {
             let mode = tb_mode(switch.link_speed, switch.current_speed, false);
-            let generation: u32 = mode[2..].parse().unwrap_or(4);
-            let speed = if generation >= 5 {
-                "80 Gb/s"
-            } else {
-                "40 Gb/s"
+            let generation: u32 = mode
+                .strip_prefix("TB")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let speed = match generation {
+                5 => "80 Gb/s",
+                3 | 4 => "40 Gb/s",
+                _ => "unknown",
             };
             (
                 switch.uid,
                 TbBus {
                     name: format!("{mode} Bus {}", switch.uid & 0xF),
                     is_active: false,
-                    speed_label: format!("Up to {speed}"),
+                    speed_label: if generation >= 3 {
+                        format!("Up to {speed}")
+                    } else {
+                        "Unknown speed".to_string()
+                    },
                     devices: Vec::new(),
                 },
             )
@@ -183,6 +190,19 @@ pub fn render_tb_tree(buses: &[TbBus], bridge_peers: &[String]) -> String {
     lines.join("\n")
 }
 
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn ffi_layout_matches_link_header() {
+        assert_eq!(size_of::<RawTbSwitch>(), 224);
+        assert_eq!(offset_of!(RawTbSwitch, vendor), 28);
+        assert_eq!(offset_of!(RawTbSwitch, device), 92);
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn read_tb_switches() -> Vec<TbSwitchInfo> {
     Vec::new()
@@ -235,7 +255,14 @@ mod tests {
         assert_eq!(tb_mode(14, 0, false), "TB5");
         assert_eq!(tb_mode(12, 0, false), "TB4");
         assert_eq!(tb_mode(8, 0, false), "TB3");
-        assert_eq!(tb_mode(0, 0, false), "TB4");
+        assert_eq!(tb_mode(0, 0, false), "Unknown");
+    }
+
+    #[test]
+    fn unknown_bus_speed_is_not_presented_as_tb4() {
+        let buses = build_tb_buses(&[switch(0x25, 0, 0, 0, 0)]);
+        assert_eq!(buses[0].name, "Unknown Bus 5");
+        assert_eq!(buses[0].speed_label, "Unknown speed");
     }
 
     #[test]

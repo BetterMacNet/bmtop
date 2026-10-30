@@ -1,10 +1,10 @@
 # bmtop 改进版源码交付
 
-版本：`0.2.1`。本页记录功能边界和验证要求；仍不等于所有硬件型号都完成验收。原工程的 MIT 许可证、四个 crate、资源和发布脚本保留。
+版本：`0.2.2`。本页记录功能边界和验证要求；仍不等于所有硬件型号都完成验收。原工程的 MIT 许可证、四个 crate、资源和发布脚本保留。
 
 ## 先看验证边界
 
-代码验证已覆盖：Rust 格式检查、Clippy、工作区测试、doctor smoke check、Python 辅助测试和 GPU C 合约测试。真实运行记录不包含快照、用户路径或凭据。C 适配器测试不验证 Apple SDK ABI 或全部 Mac 硬件。
+代码验证已覆盖：Rust 格式检查、Clippy、工作区测试、doctor smoke check、Python 辅助测试、GPU/磁盘 C 合约测试和 C/Rust FFI 布局契约。真实运行记录不包含快照、用户路径或凭据；这些测试不替代全部 Mac 硬件验收。
 
 ## 已落地功能
 
@@ -74,7 +74,7 @@ python3 scripts/benchmark.py --binary target/release/bmtop --seconds 30 --interv
 | GitHub Issues/安全渠道 | 添加模板和政策；是否允许公开 Issue、是否开启私密报告仍需仓库维护者设置 |
 | 配置完整度 | 持久启动偏好已实现；未实现运行时保存、主题、任意列/布局编辑 |
 | 国际化/导出生态 | 保留中英双语；未实现新语言资源框架、OpenMetrics、历史回放、远程/API/插件 |
-| 发布与安装 | 本次源码提交会发布 `v0.2.1`；universal 二进制和 Homebrew 公式由 release workflow 生成/更新 |
+| 发布与安装 | 本次源码提交会发布 `v0.2.2`；universal 二进制和 Homebrew 公式由 release workflow 生成/更新 |
 
 ## Mac 验收重点
 

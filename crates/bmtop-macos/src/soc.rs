@@ -427,6 +427,21 @@ mod tests {
     }
 
     #[test]
+    fn ffi_layout_matches_soc_header() {
+        use std::mem::{offset_of, size_of};
+        assert_eq!(size_of::<RawCluster>(), 24);
+        assert_eq!(size_of::<RawFan>(), 16);
+        assert_eq!(size_of::<RawTemp>(), 12);
+        assert_eq!(offset_of!(RawTemp, celsius), 8);
+        assert_eq!(size_of::<RawSample>(), 3536);
+        assert_eq!(offset_of!(RawSample, clusters), 8);
+        assert_eq!(offset_of!(RawSample, temps), 412);
+        assert_eq!(offset_of!(RawSample, elapsed_ns), 3528);
+        assert_eq!(size_of::<RawTopology>(), 80);
+        assert_eq!(offset_of!(RawTopology, p_cores), 68);
+    }
+
+    #[test]
     fn topology_conversion_handles_missing_gpu() {
         let mut raw = RawTopology {
             brand: [0; 64],

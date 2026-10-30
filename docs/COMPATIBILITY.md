@@ -25,7 +25,10 @@ prove SMC/thermal hardware absence.
 Group enumeration does NOT mean every channel is usable. Subscription failure is
 not automatically labeled "permission denied" or "kernel rejected": neither is
 proven by that return code. Missing metrics remain null; nonfinite temperatures
-and power readings are rejected. No speculative SoC family fallback table is used.
+and power readings are rejected. Disk I/O distinguishes a readable idle source
+(all counters zero) from an unavailable source. C/Rust native struct size and
+offset contracts are checked in the synthetic native test. No speculative SoC
+family fallback table is used.
 
 The C SoC implementation uses process-global state. An atomic lease disallows a
 second collector, and the Rust handle is not Sync. The TUI constructs SoC state
@@ -40,6 +43,14 @@ attempts are retained. Truncation or unavailability invalidates the GPU delta
 baseline and leaves process GPU percentages unavailable instead of normalizing
 an incomplete enumeration into a whole-system total. GPU model names are now
 best-effort direct IORegistry metadata; they may be absent on some machines.
+
+## Runtime compatibility manifest
+
+`bmtop doctor --format json` now records the running OS product version/build,
+kernel release, hardware model/chip, machine and process architectures, Rosetta
+translation state, and string-valued source status under `runtime` and `sources`.
+Optional sources report `available` or `unavailable`; this is a capability probe,
+not proof that every optional channel or counter will produce a live sample.
 
 ## Hardware acceptance matrix (all pending real-device verification)
 

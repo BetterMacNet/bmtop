@@ -6,8 +6,11 @@
 mod command;
 mod connections;
 mod gpu_buffer;
+mod platform;
 mod pmenergy;
 mod powermetrics;
+
+pub use platform::{runtime_platform, RuntimePlatform};
 
 pub use pmenergy::{load_energy_coefficients, parse_energy_constants};
 pub use powermetrics::{parse_powermetrics_plist, sample_powermetrics, PowerMetricsSample};
@@ -334,6 +337,29 @@ mod ffi {
 
     pub fn interface_name(value: &InterfaceRaw) -> Option<String> {
         c_string(&value.name)
+    }
+
+    #[cfg(test)]
+    mod layout_tests {
+        use super::*;
+        use std::mem::{align_of, offset_of, size_of};
+
+        #[test]
+        fn system_ffi_layout_matches_c_header() {
+            assert_eq!(size_of::<CpuTicks>(), 32);
+            assert_eq!(offset_of!(CpuTicks, nice), 24);
+            assert_eq!(size_of::<MemoryRaw>(), 96);
+            assert_eq!(offset_of!(MemoryRaw, swap_total_bytes), 72);
+            assert_eq!(size_of::<ProcessRaw>(), 1256);
+            assert_eq!(offset_of!(ProcessRaw, qos_ns), 72);
+            assert_eq!(offset_of!(ProcessRaw, rusage_ok), 160);
+            assert_eq!(offset_of!(ProcessRaw, path), 228);
+            assert_eq!(size_of::<InterfaceRaw>(), 80);
+            assert_eq!(size_of::<GpuRaw>(), 16);
+            assert_eq!(size_of::<ThreadRaw>(), 88);
+            assert_eq!(size_of::<GpuTimeRaw>(), 16);
+            assert_eq!(align_of::<ProcessRaw>(), 8);
+        }
     }
 }
 

@@ -980,13 +980,37 @@ fn soc_probe_json() -> serde_json::Value {
 
 fn extras_probe_json() -> serde_json::Value {
     let link = bmtop_macos::link::read_link_info();
+    let rdma = bmtop_macos::rdma::read_rdma_status();
     json!({
         "battery": bmtop_macos::soc::read_battery().is_some(),
         "disk_io": bmtop_macos::disk_io_available(),
         "ethernet_links": link.ethernet.len(),
         "wifi": link.wifi.is_some(),
-        "rdma": std::path::Path::new("/usr/bin/rdma_ctl").exists(),
+        "rdma": rdma.available,
         "fps_permission": bmtop_macos::link::fps_permission_granted(),
+    })
+}
+
+fn source_state(available: bool) -> &'static str {
+    if available {
+        "available"
+    } else {
+        "unavailable"
+    }
+}
+
+fn doctor_sources(soc: &serde_json::Value, extras: &serde_json::Value) -> serde_json::Value {
+    let soc_available = soc["initialization"]["state"].as_str() == Some("available");
+    let bool_source = |key: &str| source_state(extras[key].as_bool().unwrap_or(false));
+    json!({
+        "ioreport": source_state(soc_available),
+        "smc": source_state(soc["smc"].as_bool().unwrap_or(false)),
+        "thermal": source_state(soc["thermal"].as_bool().unwrap_or(false)),
+        "battery": bool_source("battery"),
+        "disk_io": bool_source("disk_io"),
+        "wifi": bool_source("wifi"),
+        "rdma": bool_source("rdma"),
+        "fps": bool_source("fps_permission"),
     })
 }
 
@@ -998,11 +1022,18 @@ fn run_doctor(format: OutputFormat, language: Language) -> Result<()> {
         "" => "unset",
         _ => "other",
     };
+    let soc = soc_probe_json();
+    let extras = extras_probe_json();
+    let sources = doctor_sources(&soc, &extras);
     let value = json!({
         "schema_version": SCHEMA_VERSION, "kind": "doctor", "version": env!("CARGO_PKG_VERSION"),
         "captured_at": bmtop_core::rfc3339_now(), "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH, "term": term, "tty": io::stdout().is_terminal(),
-        "uptime_seconds": uptime_seconds(), "soc": soc_probe_json(), "extras": extras_probe_json(),
+        "runtime": serde_json::to_value(bmtop_macos::runtime_platform())?,
+        "uptime_seconds": uptime_seconds(),
+        "soc": soc,
+        "extras": extras,
+        "sources": sources,
         "commands": {
             "system_profiler": std::path::Path::new("/usr/sbin/system_profiler").is_file(),
             "powermetrics": std::path::Path::new("/usr/bin/powermetrics").is_file(),
