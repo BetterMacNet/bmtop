@@ -224,3 +224,8 @@ regenerate it after a dependency change, re-run the extraction over
 In addition, bmtop reads SoC metrics through Apple system libraries
 (IOReport, IOKit, SMC) that ship with macOS. These libraries are used at
 runtime only and are not redistributed with bmtop.
+
+Optional network flow accounting invokes Apple's installed `/usr/bin/nettop`;
+connection listing invokes the system `/usr/sbin/lsof`. These system executables
+are not copied, linked or redistributed. The flow implementation adds no GPL
+code, libpcap or other dependency; bmtop's own license remains MIT.

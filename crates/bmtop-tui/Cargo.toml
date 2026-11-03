@@ -11,5 +11,5 @@ path = "src/lib.rs"
 anyhow.workspace = true
 bmtop-core = { path = "../bmtop-core" }
 crossterm.workspace = true
-ratatui.workspace = true
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 unicode-width.workspace = true

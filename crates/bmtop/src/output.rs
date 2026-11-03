@@ -155,6 +155,35 @@ pub fn report_csv(kind: &str, data: &Value, with_header: bool) -> Result<String>
                 );
             }
         }
+        "network_flows" => {
+            header(&mut out, with_header, "pid,command,protocol,local_endpoint,remote_endpoint,interface,state,received_bytes,sent_bytes,receive_bytes_per_second,send_bytes_per_second,elapsed_seconds,truncated");
+            for flow in data["flows"].as_array().into_iter().flatten() {
+                let mut values = vec![number(&flow["pid"])];
+                values.extend(
+                    [
+                        "command",
+                        "protocol",
+                        "local_endpoint",
+                        "remote_endpoint",
+                        "interface",
+                        "state",
+                    ]
+                    .map(|key| cell(flow[key].as_str().unwrap_or_default())),
+                );
+                values.extend(
+                    [
+                        "received_bytes",
+                        "sent_bytes",
+                        "receive_bytes_per_second",
+                        "send_bytes_per_second",
+                    ]
+                    .map(|key| number(&flow[key])),
+                );
+                values.push(number(&data["elapsed_seconds"]));
+                values.push(data["truncated"].to_string());
+                row(&mut out, &values);
+            }
+        }
         "network_connections" => {
             header(&mut out, with_header, "pid,command,protocol,endpoint,state");
             for connection in data["connections"].as_array().into_iter().flatten() {

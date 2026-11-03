@@ -38,6 +38,7 @@ bmtop ps --sort memory --limit 10
 # Produce bounded data for scripts
 bmtop memory --format json
 bmtop network --count 10 --interval 1s --format jsonl
+bmtop network --flows --count 5 --interval 1s --format jsonl
 bmtop memory --count 10 --interval 1s --format csv
 ```
 
@@ -50,7 +51,8 @@ metrics are reported as unavailable rather than fabricated as zero. See the
 Apple Silicon SoC, sensor and GPU details are best-effort native metrics. Intel
 Macs and systems without a readable source simply omit unavailable fields. The
 `f` key enables FPS collection only after the user grants Screen Recording
-permission.
+permission. On the Network page, press `v` to opt into socket-flow rates;
+the page also shows the exact `sudo` command for trying broader visibility.
 
 `bmtop gpu --enhanced` and `bmtop sensors --enhanced` run one explicit
 `powermetrics` sample through `sudo`. This is not used by the TUI or the normal

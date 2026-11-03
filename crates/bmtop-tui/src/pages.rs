@@ -353,6 +353,10 @@ pub(crate) fn render_network(
                 .add_modifier(Modifier::BOLD),
         )),
     ];
+    // Keep at least one interface visible below the persistent network hints.
+    if area.height < 7 {
+        lines.remove(2);
+    }
     // 机器上有二十来个接口，绝大多数常年是 0。按当前速率、其次按累计流量
     // 降序，真正在跑流量的接口才会排在看得见的位置。
     let mut interfaces: Vec<_> = snapshot.interfaces.iter().collect();

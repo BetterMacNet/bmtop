@@ -10,7 +10,8 @@ diagnostics version 1 are separate contracts.
 | cpu | yes | yes | yes | added |
 | memory | yes | yes | yes | added |
 | network | yes | yes | yes | yes |
-| network --connections | yes | yes | yes | added |
+| network --connections [--pid PID] | yes | yes | yes | added |
+| network --flows | yes | yes | yes | yes |
 | disk | yes | yes | yes | added |
 | gpu | yes | yes | yes | added summary (non-enhanced only) |
 | hardware [category] | yes | yes | yes | explicitly rejected |
@@ -38,6 +39,40 @@ boundaries, per-file `f` flushing. An empty selection is valid; other nonzero
 errors are not silently treated as complete data. Available connection coverage
 still depends on local permissions and process churn. No packet capture, DNS
 lookup, elevated permissions or remote connection is introduced.
+
+## Socket flow accounting
+
+`bmtop network --flows` invokes Apple's installed `/usr/bin/nettop` with numeric
+addresses and three cumulative samples, discarding the initial bootstrap and
+comparing the final two. Rates use each matching socket's reported
+timestamps, not command wall time or a presumed one-second interval. This is
+**socket accounting, not packet capture or wire-byte traffic**. Process summary
+rows are excluded to avoid double counting. Use `--interval 1s` through `60s`
+(whole seconds); repeated output samples use consecutive two-sample windows,
+without an extra sleep. Short-lived sockets and traffic between windows can be
+missed. Interface totals and socket totals need not agree.
+
+JSON/JSONL kind `network_flows` contains `data.flows`, `data.elapsed_seconds`,
+and `data.truncated`. Rows include PID, command, protocol, local/remote endpoints,
+interface, state, cumulative received/sent bytes and receive/send bytes per second.
+Missing counters, new sockets, state changes and counter resets yield null rates,
+not invented zeroes. Midnight timestamp rollover is handled. Identical tuples
+within either sample are omitted as ambiguous; `truncated=true` also indicates
+these omissions. PID/name/protocol/endpoints/interface form the match key; nettop
+provides no stable socket ID, so same-tuple reuse between samples remains a limit.
+At most 512 rows are returned, sorted by combined known RX/TX rate descending,
+unknown rates last. Strict privacy removes command and endpoints in all formats.
+CSV adds elapsed seconds and truncation to each row; JSONL also represents empty
+samples explicitly and is preferred for recording.
+
+Visibility depends on permissions and process churn. For broader visibility,
+users may manually run `sudo bmtop --no-config network --flows` or
+`sudo bmtop --no-config network --connections`. Elevation never happens
+implicitly, and even root does not guarantee complete coverage. Human guidance
+is written once to stderr, keeping machine stdout parseable.
+
+The project remains MIT. No GPL code, packet-capture library or dependency is
+added. Apple's system `nettop` is invoked at runtime, not copied or bundled.
 
 ## Synthetic examples
 

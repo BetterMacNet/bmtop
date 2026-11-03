@@ -1,6 +1,6 @@
 # bmtop 改进版源码交付
 
-版本：`0.2.2`。本页记录功能边界和验证要求；仍不等于所有硬件型号都完成验收。原工程的 MIT 许可证、四个 crate、资源和发布脚本保留。
+版本：`0.3.0`。本页记录功能边界和验证要求；仍不等于所有硬件型号都完成验收。原工程的 MIT 许可证、四个 crate、资源和发布脚本保留。
 
 ## 先看验证边界
 
@@ -74,7 +74,7 @@ python3 scripts/benchmark.py --binary target/release/bmtop --seconds 30 --interv
 | GitHub Issues/安全渠道 | 添加模板和政策；是否允许公开 Issue、是否开启私密报告仍需仓库维护者设置 |
 | 配置完整度 | 持久启动偏好已实现；未实现运行时保存、主题、任意列/布局编辑 |
 | 国际化/导出生态 | 保留中英双语；未实现新语言资源框架、OpenMetrics、历史回放、远程/API/插件 |
-| 发布与安装 | 本次源码提交会发布 `v0.2.2`；universal 二进制和 Homebrew 公式由 release workflow 生成/更新 |
+| 发布与安装 | 本次源码提交会发布 `v0.3.0`；universal 二进制和 Homebrew 公式由 release workflow 生成/更新 |
 
 ## Mac 验收重点
 

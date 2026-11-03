@@ -1,7 +1,7 @@
-> **v0.2.2.** This release adds macOS 27 compatibility diagnostics,
-> zero-versus-unavailable disk I/O semantics, and native FFI contracts. See
-> [compatibility](docs/COMPATIBILITY.md) and [performance methodology](docs/PERFORMANCE.md)
-> for verification boundaries.
+> **v0.3.0.** This release adds opt-in TCP/UDP socket-flow accounting via macOS
+> `nettop`, per-process connection filtering, and visible permission guidance,
+> while preserving the no-sudo default. See [output contracts](docs/OUTPUT-CONTRACT.md)
+> and [privacy boundaries](docs/PRIVACY.md) for coverage limits.
 
 <h1 align="center">bmtop</h1>
 
@@ -103,8 +103,14 @@ on optional SoC, GPU, sensor, FPS or link metrics.
 bmtop ps --sort memory --limit 10
 bmtop ps --sort energy --limit 10
 
-# Watch network throughput and save JSONL for a script
+# Watch interface throughput and save JSONL for a script
 bmtop network --count 60 --interval 1s --format jsonl > network.jsonl
+
+# Inspect TCP/UDP socket flow rates (not packet capture)
+bmtop network --flows --count 5 --interval 1s --format jsonl > flows.jsonl
+
+# Try broader visibility explicitly; sudo never guarantees complete coverage
+sudo bmtop --no-config network --flows --count 5 --interval 1s
 
 # Inspect hardware and privacy-safe capability boundaries
 bmtop doctor --format json
@@ -152,6 +158,7 @@ generated with `bmtop completion <shell>`.
 | `↑` `↓` | Move selection |
 | `/` | Search |
 | `Space` | Pause |
+| `v` | Toggle opt-in socket-flow view on the Network page |
 | `?` | Help |
 | `q` | Quit |
 
@@ -275,14 +282,28 @@ probe result under `soc`.
 sample through `/usr/bin/sudo` (fixed binary, fixed arguments, no shell) and
 merge GPU frequency/power and thermal pressure into the output; `--enhanced`
 is rejected elsewhere. Signals for another user's process also go through
-`sudo` only when explicitly requested. The TUI never runs as root and
+`sudo` only when explicitly requested. The TUI does not elevate itself and
 passwords are never stored.
+
+Use `bmtop network --connections --pid 123` to inspect one process's sockets,
+or `bmtop network --flows --watch` for TCP/UDP socket counters and RX/TX rates
+from Apple's installed `nettop`. On the Network TUI page, press `v` to opt into
+the flow view. This is socket accounting, **not packet capture**; short-lived
+sockets may be missed, and partial coverage is indicated. No DNS lookup, GPL
+code, libpcap or new dependency is introduced; bmtop remains MIT.
+
+Permissions can restrict process details and connections. If needed, manually
+run `sudo bmtop --no-config ps`, `sudo bmtop --no-config network --connections`
+or `sudo bmtop --no-config network --flows` for broader visibility; even root
+does not guarantee complete results. Prefer the scoped CLI over running the
+whole TUI as root. `--privacy strict` hides flow process names and endpoints in
+both CLI and TUI. See [output semantics and limitations](docs/OUTPUT-CONTRACT.md).
 
 Energy Impact uses the `energy_constants` in `/usr/share/pmenergy/default.plist`
 (CPU time weighted per QoS class, wakeups, disk I/O) fed by `proc_pid_rusage` —
-no root, no `powermetrics`. Per-process network traffic remains intentionally
-excluded: macOS has no stable unprivileged PID-level byte counter, and interface
-totals cannot be attributed to individual processes without fabricating data.
+no root, no `powermetrics`. Network traffic remains excluded from the Energy
+Impact model: the opt-in `nettop` socket view has separate, permission-dependent
+coverage, and interface totals cannot safely be attributed to processes.
 Where `ri_pkg_idle_wkups` stays flat — as it does on Apple Silicon — the
 wakeup term falls back to `ri_interrupt_wkups`. Estimated watts splits the
 measured CPU/GPU package power across processes by CPU/GPU share, so the column
@@ -332,8 +353,8 @@ It runs `./scripts/bump-homebrew-formula.sh`, which is also usable by hand if
 CI is unavailable — it is idempotent, so re-running a release is safe:
 
 ```sh
-DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.2.2   # print the diff only
-GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.2.2  # commit and push the bump
+DRY_RUN=1 ./scripts/bump-homebrew-formula.sh v0.3.0   # print the diff only
+GH_TOKEN=… ./scripts/bump-homebrew-formula.sh v0.3.0  # commit and push the bump
 ```
 
 The workspace is split into `bmtop-core` (models, schema, i18n),

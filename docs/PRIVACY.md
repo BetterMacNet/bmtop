@@ -10,7 +10,7 @@ Policies are explicit; **none is a guarantee of perfect anonymity**.
 | Reviewed hardware measurements | retained | retained; selected model/manufacturer labels masked | unchanged |
 | Process argv | removed | removed | retained when collected for selected PID |
 | Process names, usernames, paths, thread names | retained | masked/removed | retained |
-| Connection command / endpoint | retained | null | retained |
+| Connection / flow command and local / remote endpoints (CLI and TUI) | retained | null | retained |
 | Non-root mount labels / remote share filesystem names | retained | masked | retained |
 | PID, UID, start time, timestamps, numeric usage, interface names | retained | retained | retained |
 | Unstructured Thunderbolt/RDMA detail sections in TUI | retained | omitted | retained |
@@ -34,6 +34,12 @@ Configuration applies to CLI exports AND TUI sessions. Default TUI detail argv i
 therefore hidden as well. Strict mode can make local process inspection less
 convenient; choose deliberately. Numeric identity fields remain for stable metric
 association, so strict exports can still be correlated with other local data.
+
+Flow collection is opt-in (`network --flows`, or `v` on the Network TUI page).
+It reads numeric socket accounting through Apple's installed `nettop`, without
+packet capture, DNS resolution or automatic elevation. Raw endpoints are parsed
+locally before strict-mode redaction; numeric PIDs, counters, timestamps and
+interface names remain visible. Default/off reports can identify remote peers.
 
 Diagnostics contain counts/durations only. They are accumulated in memory with a
 2048-observation bound per timing series; disk export is opt-in and uses private

@@ -5,6 +5,8 @@
 
 mod command;
 mod connections;
+mod flows;
+pub use flows::network_flows;
 mod gpu_buffer;
 mod platform;
 mod pmenergy;

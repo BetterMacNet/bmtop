@@ -1,5 +1,6 @@
 //! Ratatui application and interaction state for bmtop.
 
+mod network;
 mod overview;
 mod pages;
 mod render;
@@ -18,10 +19,10 @@ use crossterm::event::{
     self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
-use scheduling::{poll_timeout, RedrawGate};
+use scheduling::{poll_timeout, DetailSchedule, RedrawGate};
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
-use worker::{DetailRevision, Response, SampleRequest, Workers};
+use worker::{Response, SampleRequest, Workers};
 
 /// 终端是否支持增强键盘协议。⌘1…⌘9 依赖它把 SUPER 修饰键上报给应用；
 /// 默认 macOS Terminal 不支持，kitty / WezTerm / Ghostty 等支持。
@@ -148,10 +149,6 @@ where
     result
 }
 
-fn needs_detail(mode: AppMode) -> bool {
-    matches!(mode, AppMode::Overview | AppMode::Disk | AppMode::Hardware)
-}
-
 fn run_loop<A>(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut UiState,
@@ -168,29 +165,32 @@ where
     let mut redraw = RedrawGate::default();
     let mut refresh = Duration::from_millis(interval.as_millis());
     let mut next_sample = Instant::now();
-    let mut revision = DetailRevision::new(state.mode);
-    let mut loaded_detail = None;
+    let mut details = DetailSchedule::new(state.mode, Instant::now());
     let mut sample_in_flight = false;
-    let mut detail_in_flight = false;
     loop {
         let configured = Duration::from_millis(state.interval_millis);
         if configured != refresh {
             refresh = configured;
             next_sample = next_sample.min(Instant::now() + refresh);
         }
-        if revision.update(state.mode, false) {
-            loaded_detail = None;
+        if details.update(
+            state.mode,
+            state.paused,
+            state.network_flows_enabled,
+            false,
+            Instant::now(),
+        ) {
             state.detail_error = None;
             redraw.invalidate();
         }
-        let ticket = revision.ticket();
-        if needs_detail(state.mode) && loaded_detail != Some(ticket) && !detail_in_flight {
+        if details.due(Instant::now()) {
+            let ticket = details.start();
             workers
                 .details
                 .try_send(ticket)
                 .map_err(|error| anyhow::anyhow!("detail worker unavailable: {error}"))?;
-            loaded_detail = Some(ticket);
-            detail_in_flight = true;
+            state.network_flows_loading = state.mode == AppMode::Network;
+            redraw.invalidate();
         }
         if !state.paused && !sample_in_flight && Instant::now() >= next_sample {
             workers
@@ -225,9 +225,6 @@ where
                         // that was already in flight when Space was pressed.
                         Ok(snapshot) if !state.paused => {
                             state.set_snapshot(*snapshot);
-                            if revision.update(state.mode, false) {
-                                loaded_detail = None;
-                            }
                             redraw.invalidate();
                         }
                         Ok(_) => {}
@@ -248,9 +245,9 @@ where
                     panicked,
                 } => {
                     anyhow::ensure!(!panicked, "detail worker panicked; terminal restored");
-                    detail_in_flight = false;
+                    state.network_flows_loading = false;
                     stats.detail_service.record(service_time);
-                    if revision.accepts(ticket) {
+                    if details.finish(ticket, Instant::now()) {
                         if result.is_err() {
                             stats.detail_errors += 1;
                         }
@@ -275,15 +272,14 @@ where
         }
         // A stale result just freed the detail lane. Do not wait for a long
         // sample interval before requesting the page the user actually selected.
-        if needs_detail(state.mode) && loaded_detail != Some(revision.ticket()) && !detail_in_flight
-        {
+        if details.due(Instant::now()) {
             continue;
         }
         let timeout = poll_timeout(
             Instant::now(),
-            next_sample,
+            details.deadline(next_sample),
             state.paused,
-            sample_in_flight || detail_in_flight,
+            sample_in_flight || details.in_flight(),
         );
         if !event::poll(timeout)? {
             continue;
@@ -313,8 +309,13 @@ where
                 }
                 if state.take_refresh_request() {
                     next_sample = Instant::now();
-                    revision.update(state.mode, true);
-                    loaded_detail = None;
+                    details.update(
+                        state.mode,
+                        state.paused,
+                        state.network_flows_enabled,
+                        true,
+                        Instant::now(),
+                    );
                 }
                 if let Some(pending) = state.take_completed_action() {
                     if keyboard_enhanced {
@@ -760,6 +761,127 @@ mod tests {
         assert!(rendered.contains("890 MHz"), "缺频率:\n{rendered}");
         assert!(rendered.contains("2.10W"), "缺功耗:\n{rendered}");
         assert!(rendered.contains("48.1°C"), "缺温度:\n{rendered}");
+    }
+
+    #[test]
+    fn network_flows_are_opt_in_and_show_rates_endpoints_and_safe_sudo_hint() {
+        for language in [Language::English, Language::Chinese] {
+            let mut state = english(AppMode::Network);
+            state.set_language(language);
+            state.set_snapshot(rich_snapshot());
+            assert!(!state.network_flows_enabled);
+            let narrow = screen(&state, 30, 24);
+            assert!(
+                narrow.contains("--flows"),
+                "wrapped command clipped: {narrow}"
+            );
+            for (width, height) in [(120, 24), (60, 16)] {
+                let initial = screen(&state, width, height);
+                assert!(initial.contains("[v]"));
+                assert!(
+                    initial.contains("sudo bmtop --no-config network --flows"),
+                    "{initial}"
+                );
+                let hint_line = initial
+                    .lines()
+                    .position(|line| line.contains("[v]"))
+                    .unwrap();
+                let interface_line = initial
+                    .lines()
+                    .position(|line| line.contains("en0"))
+                    .unwrap();
+                assert!(
+                    hint_line < interface_line,
+                    "hint must precede interfaces: {initial}"
+                );
+            }
+            state.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+            assert!(state.network_flows_enabled);
+            let loading = if language == Language::English {
+                "Loading"
+            } else {
+                "加载中"
+            };
+            assert!(screen(&state, 120, 24).contains(loading));
+            state.apply_detail(Ok(ModeDetail::NetworkFlows(
+                bmtop_core::NetworkFlowSnapshot {
+                    flows: vec![bmtop_core::NetworkFlow {
+                        pid: 4242,
+                        command: Some("browser".into()),
+                        protocol: "tcp4".into(),
+                        local_endpoint: None,
+                        remote_endpoint: Some("203.0.113.1:443".into()),
+                        interface: Some("en0".into()),
+                        state: Some("Established".into()),
+                        received_bytes: Some(4096),
+                        sent_bytes: Some(1024),
+                        receive_bytes_per_second: Some(2048.0),
+                        send_bytes_per_second: None,
+                    }],
+                    elapsed_seconds: 1.0,
+                    truncated: true,
+                },
+            )));
+            let rendered = screen(&state, 120, 30);
+            for expected in [
+                "browser",
+                "4242",
+                "203.0.113.1:443",
+                "2.0K/s",
+                "en0",
+                "sudo bmtop --no-config network --flows",
+            ] {
+                assert!(
+                    rendered.contains(expected),
+                    "missing {expected}:\n{rendered}"
+                );
+            }
+            let expected = if language == Language::English {
+                "not packet capture"
+            } else {
+                "非抓包"
+            };
+            assert!(rendered.contains(expected), "{rendered}");
+            let partial = if language == Language::English {
+                "Partial results"
+            } else {
+                "部分结果"
+            };
+            assert!(rendered.contains(partial));
+            let first = state.network_flows.as_ref().unwrap().flows[0].clone();
+            state.apply_detail(Ok(ModeDetail::NetworkFlows(
+                bmtop_core::NetworkFlowSnapshot {
+                    flows: vec![
+                        first.clone(),
+                        bmtop_core::NetworkFlow {
+                            command: Some("fastest".into()),
+                            receive_bytes_per_second: Some(8192.0),
+                            ..first
+                        },
+                    ],
+                    elapsed_seconds: 1.0,
+                    truncated: false,
+                },
+            )));
+            let ordered = screen(&state, 120, 30);
+            assert!(ordered.find("fastest").unwrap() < ordered.find("browser").unwrap());
+            for width in [40, 60, 80] {
+                let _ = screen(&state, width, 24);
+            }
+            state.apply_detail(Err("fixture failure".into()));
+            let rendered = screen(&state, 120, 30);
+            assert!(rendered.contains("fixture failure") && rendered.contains("browser"));
+            state.paused = true;
+            let cached = state.network_flows.clone();
+            state.apply_detail(Ok(ModeDetail::NetworkFlows(
+                bmtop_core::NetworkFlowSnapshot {
+                    flows: vec![],
+                    elapsed_seconds: 1.0,
+                    truncated: false,
+                },
+            )));
+            assert_eq!(state.network_flows, cached);
+        }
     }
 
     #[test]

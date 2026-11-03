@@ -168,7 +168,7 @@ fn render_primary(frame: &mut Frame<'_>, area: Rect, state: &UiState) {
         AppMode::Overview => crate::overview::render_overview(frame, area, state, snapshot),
         AppMode::Cpu => crate::pages::render_cpu(frame, area, state, snapshot),
         AppMode::Memory => crate::pages::render_memory(frame, area, snapshot, state.strings()),
-        AppMode::Network => crate::pages::render_network(frame, area, state, snapshot),
+        AppMode::Network => crate::network::render_network(frame, area, state, snapshot),
         AppMode::Disk => crate::pages::render_disk(frame, area, state),
         AppMode::Gpu => crate::pages::render_gpu(frame, area, state, snapshot),
         AppMode::Sensors => crate::pages::render_sensors(frame, area, state, snapshot),

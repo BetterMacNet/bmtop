@@ -70,6 +70,7 @@ pub enum ModeDetail {
     None,
     Disks(Vec<DiskVolume>),
     Sections(Vec<DetailSection>),
+    NetworkFlows(bmtop_core::NetworkFlowSnapshot),
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +113,10 @@ pub struct UiState {
     pub detail_scroll: u16,
     /// 磁盘卷缓存。概览页和磁盘页都要用，切到硬件页时不能丢。
     pub disks: Vec<DiskVolume>,
+    /// Opt-in socket traffic view (`v` on the network page).
+    pub network_flows_enabled: bool,
+    pub network_flows: Option<bmtop_core::NetworkFlowSnapshot>,
+    pub(crate) network_flows_loading: bool,
     pub detail_error: Option<String>,
     /// 按下 `r` 的显式标志。原来靠比对状态栏文案判断，一翻译就失效了。
     pub refresh_requested: bool,
@@ -158,6 +163,9 @@ impl Default for UiState {
             section_selected: 0,
             detail_scroll: 0,
             disks: Vec::new(),
+            network_flows_enabled: false,
+            network_flows: None,
+            network_flows_loading: false,
             detail_error: None,
             refresh_requested: false,
             interval_millis: 1_000,
@@ -321,6 +329,11 @@ impl UiState {
     /// 把懒加载的结果并入状态。各类结果分开缓存，切模式不会互相冲掉。
     pub fn apply_detail(&mut self, detail: Result<ModeDetail, String>) {
         match detail {
+            Ok(ModeDetail::NetworkFlows(flows)) if !self.paused => {
+                self.network_flows = Some(flows);
+                self.detail_error = None;
+            }
+            Ok(ModeDetail::NetworkFlows(_)) => {}
             Ok(ModeDetail::None) => self.detail_error = None,
             Ok(ModeDetail::Disks(disks)) => {
                 self.disks = disks;
@@ -605,6 +618,9 @@ impl UiState {
                 self.refresh_requested = true; // 立即采一拍，开关反馈不用等下个周期
             }
             KeyCode::Char('i') => self.hide_idle = !self.hide_idle,
+            KeyCode::Char('v') if self.mode == AppMode::Network => {
+                self.network_flows_enabled = !self.network_flows_enabled;
+            }
             KeyCode::Char('V') => self.tree_view = !self.tree_view,
             KeyCode::Char('H') => self.thread_view = !self.thread_view,
             KeyCode::Char('u') => {

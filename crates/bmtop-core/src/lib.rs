@@ -4,6 +4,8 @@ pub mod diagnostics;
 mod energy;
 mod extras;
 mod i18n;
+mod network;
+pub use network::{NetworkFlow, NetworkFlowSnapshot};
 pub mod privacy;
 mod soc;
 pub use privacy::PrivacyMode;

@@ -280,6 +280,14 @@ strings! {
     cli_help_top_mode => "直接打开某一页：1 概览、2 进程 …… 9 传感器"
                        / "Open on a specific page: 1 overview, 2 processes, … 9 sensors",
     cli_help_net_conn => "列出网络连接而不是接口统计" / "List network connections instead of interface statistics",
+    cli_help_net_flows => "通过系统 nettop 显示 TCP/UDP 套接字计数与速率（非抓包）；间隔为 1–60 整秒"
+                        / "Show TCP/UDP socket counters and rates via system nettop (not packet capture); interval: 1–60 whole seconds",
+    cli_flow_visibility => "套接字计数并非网线上实际字节数；短连接可能遗漏。权限不足时，可手动运行 sudo bmtop --no-config network --flows，但不保证完整。strict 隐私模式隐藏进程名和端点；不抓包，不进行 DNS 查询。"
+                          / "Socket accounting is not wire-byte traffic; short-lived sockets may be missed. For broader visibility, manually run sudo bmtop --no-config network --flows; complete coverage is not guaranteed. Strict privacy hides process names and endpoints. No packet capture or DNS lookups.",
+    cli_network_visibility => "连接可见范围受权限和进程变化影响。如需查看更多进程的连接，可手动运行 sudo bmtop network --connections；即使使用 sudo，也不保证完整。不抓包，不进行 DNS 查询。strict 隐私模式隐藏进程名和端点。"
+                            / "Connection visibility depends on permissions and process churn. To see connections from more processes, manually run sudo bmtop network --connections; even sudo cannot guarantee complete coverage. No packet capture or DNS lookups. Strict privacy hides process names and endpoints.",
+    cli_process_visibility => "进程详情受 macOS 权限限制。如需查看更多进程详情，可手动运行 sudo bmtop ps 或 sudo bmtop top；即使使用 sudo，也不保证完整。"
+                            / "Process details depend on macOS permissions. To see more process details, manually run sudo bmtop ps or sudo bmtop top; even sudo cannot guarantee complete coverage.",
     cli_help_hw_cat   => "只看某一类，例如 `SPDisplaysDataType`；省略则全部列出"
                        / "Limit to one category, e.g. `SPDisplaysDataType`; omit to list all",
     cli_help_shell    => "为哪个 shell 生成脚本" / "Which shell to emit the script for",

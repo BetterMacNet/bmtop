@@ -105,8 +105,12 @@ enum Command {
     Cpu,
     Memory,
     Network {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "flows")]
         connections: bool,
+        #[arg(long)]
+        flows: bool,
+        #[arg(long, requires = "connections", value_parser = clap::value_parser!(i32).range(1..))]
+        pid: Option<i32>,
     },
     Disk,
     Gpu,
@@ -249,18 +253,27 @@ fn localized_help(command: clap::Command, text: &'static bmtop_core::Strings) ->
     // 各子命令自己的参数说明。
     command
         .mut_subcommand("top", |sub| {
-            sub.mut_arg("mode", |argument| argument.help(text.cli_help_top_mode))
+            sub.after_help(text.cli_process_visibility)
+                .mut_arg("mode", |argument| argument.help(text.cli_help_top_mode))
         })
         .mut_subcommand("ps", |sub| {
-            sub.mut_arg("pid", |argument| argument.help(text.cli_help_ps_pid))
+            sub.after_help(text.cli_process_visibility)
+                .mut_arg("pid", |argument| argument.help(text.cli_help_ps_pid))
                 .mut_arg("user", |argument| argument.help(text.cli_help_ps_user))
                 .mut_arg("sort", |argument| argument.help(text.cli_help_ps_sort))
                 .mut_arg("limit", |argument| argument.help(text.cli_help_ps_limit))
         })
         .mut_subcommand("network", |sub| {
-            sub.mut_arg("connections", |argument| {
-                argument.help(text.cli_help_net_conn)
-            })
+            sub.after_help(text.cli_network_visibility)
+                .mut_arg("pid", |argument| argument.help(text.cli_help_ps_pid))
+                .mut_arg("flows", |argument| {
+                    argument
+                        .help(text.cli_help_net_flows)
+                        .long_help(text.cli_flow_visibility)
+                })
+                .mut_arg("connections", |argument| {
+                    argument.help(text.cli_help_net_conn)
+                })
         })
         .mut_subcommand("hardware", |sub| {
             sub.mut_arg("category", |argument| argument.help(text.cli_help_hw_cat))
@@ -456,6 +469,12 @@ fn run_top(
                     ModeDetail::Disks(disks)
                 })
                 .map_err(|error| error.to_string()),
+            AppMode::Network => bmtop_macos::network_flows(Duration::from_secs(1))
+                .map(|mut report| {
+                    privacy.redact_network_flows(&mut report);
+                    ModeDetail::NetworkFlows(report)
+                })
+                .map_err(|error| error.to_string()),
             AppMode::Hardware => hardware_report_with_privacy(privacy)
                 .map(|report| {
                     let mut sections = hardware_sections(&report.sections, language);
@@ -512,8 +531,11 @@ fn run_metric(command: Command, options: MetricOptions) -> Result<()> {
         Command::Ps { .. } => "processes",
         Command::Cpu => "cpu",
         Command::Memory => "memory",
-        Command::Network { connections: true } => "network_connections",
-        Command::Network { connections: false } => "network",
+        Command::Network {
+            connections: true, ..
+        } => "network_connections",
+        Command::Network { flows: true, .. } => "network_flows",
+        Command::Network { .. } => "network",
         Command::Disk => "disk",
         Command::Gpu => "gpu",
         Command::Sensors => "sensors",
@@ -524,9 +546,35 @@ fn run_metric(command: Command, options: MetricOptions) -> Result<()> {
     } else {
         soc_window(interval)
     };
+    if kind == "network_flows" {
+        let duration = Duration::from_millis(interval.as_millis());
+        if duration.as_secs() < 1 || duration.subsec_nanos() != 0 || duration.as_secs() > 60 {
+            return Err(usage("network --flows interval must be 1–60 whole seconds"));
+        }
+        eprintln!("{}", language.strings().cli_flow_visibility);
+        for round in 0..samples {
+            let mut report = bmtop_macos::network_flows(duration)?;
+            privacy.redact_network_flows(&mut report);
+            let data = serde_json::to_value(report)?;
+            if format == OutputFormat::Csv {
+                print!("{}", output::report_csv(kind, &data, round == 0)?);
+            } else {
+                print_report(kind, data, format)?;
+            }
+        }
+        return Ok(());
+    }
+    if kind == "network_connections" {
+        eprintln!("{}", language.strings().cli_network_visibility);
+    }
     if matches!(
         command,
-        Command::Disk | Command::Sensors | Command::Network { connections: true }
+        Command::Disk
+            | Command::Sensors
+            | Command::Network {
+                connections: true,
+                ..
+            }
     ) {
         for round in 0..samples {
             if round > 0 {
@@ -550,7 +598,15 @@ fn run_metric(command: Command, options: MetricOptions) -> Result<()> {
                     }
                 }
                 _ => {
-                    let mut rows = network_connections().map_err(anyhow::Error::new)?;
+                    let pid = match command {
+                        Command::Network { pid, .. } => pid,
+                        _ => None,
+                    };
+                    let mut rows: Vec<_> = network_connections()
+                        .map_err(anyhow::Error::new)?
+                        .into_iter()
+                        .filter(|row| pid.is_none_or(|pid| row.pid == pid))
+                        .collect();
                     if privacy == PrivacyMode::Strict {
                         for row in &mut rows {
                             row.command = None;
@@ -659,6 +715,40 @@ fn print_report_table(kind: &str, data: &serde_json::Value) {
                         .map(|value| format!("{value:.1}%"))
                         .unwrap_or_else(|| "--".into())
                 );
+            }
+        }
+        "network_flows" => {
+            println!(
+                "Socket accounting (not packet capture); interval={}s; truncated={}",
+                data["elapsed_seconds"], data["truncated"]
+            );
+            println!("PID\tCOMMAND\tPROTO\tLOCAL\tREMOTE\tIFACE\tSTATE\tRX B/s\tTX B/s");
+            for flow in data["flows"].as_array().into_iter().flatten() {
+                let values: Vec<_> = [
+                    "pid",
+                    "command",
+                    "protocol",
+                    "local_endpoint",
+                    "remote_endpoint",
+                    "interface",
+                    "state",
+                    "receive_bytes_per_second",
+                    "send_bytes_per_second",
+                ]
+                .iter()
+                .map(|key| {
+                    if let Some(text) = flow[key].as_str() {
+                        text.chars()
+                            .map(|c| if c.is_control() { ' ' } else { c })
+                            .collect::<String>()
+                    } else if flow[key].is_null() {
+                        "--".into()
+                    } else {
+                        flow[key].to_string()
+                    }
+                })
+                .collect();
+                println!("{}", values.join("\t"));
             }
         }
         "network_connections" => {
